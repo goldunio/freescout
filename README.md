@@ -6,11 +6,11 @@
 <br/><br/>
 
 [![PHP version](https://freescout-helpdesk.github.io/img/badges/PHP-7.0%2B-blue.svg)](https://github.com/freescout-helpdesk/freescout#requirements) [![Laravel version](https://freescout-helpdesk.github.io/img/badges/Laravel-5.5-blue.svg)](https://github.com/freescout-helpdesk/freescout#requirements) 
-[![Build Status](https://freescout-helpdesk.github.io/img/badges/travis.svg)](https://freescout-helpdesk.github.io/img/badges/travis.svg)
+[![Build Status](https://freescout-helpdesk.github.io/img/badges/travis.svg)](https://freescout-helpdesk.github.io/img/badges/travis.svg) [![HitCount](http://hits.dwyl.io/freescout-helpdesk/freescout.svg)](http://hits.dwyl.io/freescout-helpdesk/freescout)
 
 </div>
 
-**FreeScout** is the super lightweight free open source help desk and shared inbox written in PHP7 (Laravel 5.5 framework) – self hosted clone of HelpScout. Now you can enjoy [free Zendesk & Help Scout](https://freescout.net) without giving up privacy or locking yourself into a service you don't control.
+**FreeScout** is the super lightweight free open source help desk and shared inbox written in PHP7 (Laravel 5.5 framework) – self hosted clone of HelpScout. Now you can enjoy free Zendesk & Help Scout without giving up privacy or locking yourself into a service you don't control.
 
 FreeScout has been developed from scratch and is not using any copyrighted Help Scout materials to comply with GitHub's [DMCA Policy](https://help.github.com/articles/dmca-takedown-policy/) (trademark, design, logos, icons, CSS, JS, HTML files are copyrighted; idea cannot be copyrighted).
 
@@ -18,6 +18,7 @@ FreeScout has been developed from scratch and is not using any copyrighted Help 
 
 ## Table of Contents
    * [Features](#features)
+   * [Demo](#demo)
    * [Modules](#modules)
    * [Requirements](#requirements)
    * [News & Updates](#news--updates)
@@ -29,23 +30,33 @@ FreeScout has been developed from scratch and is not using any copyrighted Help 
 
 ![FreeScout](https://raw.githubusercontent.com/freescout-helpdesk/freescout/master/public/img/banner.png)
 
+  * No limitations on the number of users, tickets, etc.
   * 100% Mobile-friendly.
-  * Multilingual.
+  * Multilingual (English, French, Italian, Portuguese).
+  * Seamless email integration.
+  * Web installer & updater.
   * Starred conversations.
+  * Forwarding conversations.
+  * Phone conversations.
+  * Sending new conversations to multiple recipients at once.
   * Push notifications.
   * Auto reply.
   * Notes.
   * Pasting screenshots from the clipboard into the reply area.
   * Configuring notifications on a per user basis.
   * Open tracking.
-  * Edit/hide threads.
+  * Editing threads.
   * Search.
 
 Need anything else? Suggest features [here](https://feedback.userreport.com/25a3cb5f-e4bd-4470-b6f3-79fcfaa8e90f/#ideas/popular).
 
+## Demo
+
+[Live demo](https://demo.freescout.net)
+
 ## Modules
 
-[Available modules](https://github.com/freescout-helpdesk/freescout/wiki/FreeScout-Modules)
+[Available modules](https://freescout.net/modules/)
 
 ## Requirements
 
@@ -63,10 +74,16 @@ If you would like to be notified about new releases, news and updates you can su
 
 [Installation Guide](https://github.com/freescout-helpdesk/freescout/wiki/Installation-Guide)
 
+Images & one-click installs:
+
+* [Docker Image](http://freescout.net/docker/)
+* [Softaculous](http://www.softaculous.com/apps/customersupport/FreeScout) (cPanel, Plesk, ISPmanager, H-Sphere, DirectAdmin, InterWorx)
+* [Fantastico](http://ff3.netenberg.com/visitors/scripts/freescout/view) (cPanel, DirectAdmin, ISP Manager, ISP Config)
+
 ## Contributing
 
 * [Development Guide](https://github.com/freescout-helpdesk/freescout/wiki/Development-Guide)
-* [Todo list](https://github.com/freescout-helpdesk/freescout/projects/1)
+* [Todo list](https://github.com/freescout-helpdesk/freescout/labels/help%20wanted)
 * [Translate](https://github.com/freescout-helpdesk/freescout/wiki/Translate)
 * [Support project by leaving a feedback](https://github.com/freescout-helpdesk/freescout/wiki#support-project)
 
