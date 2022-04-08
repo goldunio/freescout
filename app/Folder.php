@@ -23,12 +23,12 @@ class Folder extends Model
     public static $types = [
         self::TYPE_UNASSIGNED => 'Unassigned',
         self::TYPE_MINE       => 'Mine',
+        self::TYPE_STARRED    => 'Starred',
         self::TYPE_DRAFTS     => 'Drafts',
         self::TYPE_ASSIGNED   => 'Assigned',
         self::TYPE_CLOSED     => 'Closed',
         self::TYPE_SPAM       => 'Spam',
         self::TYPE_DELETED    => 'Deleted',
-        self::TYPE_STARRED    => 'Starred',
     ];
 
     /**
@@ -68,7 +68,15 @@ class Folder extends Model
         self::TYPE_STARRED,
     ];
 
+    // Counter mode.
+    const COUNTER_ACTIVE = 1;
+    const COUNTER_TOTAL  = 2;
+
     public $timestamps = false;
+
+    protected $casts = [
+        'meta' => 'array',
+    ];
 
     /**
      * Get the mailbox to which folder belongs.
@@ -115,13 +123,13 @@ class Folder extends Model
             case self::TYPE_STARRED:
                 return __('Starred');
             default:
-                return __(self::$types[$this->type]);
+                return __(\Eventy::filter('folder.type_name', self::$types[$this->type] ?? '', $this));
         }
     }
 
     public function getTypeIcon()
     {
-        return self::$type_icons[$this->type];
+        return \Eventy::filter('folder.type_icon', self::$type_icons[$this->type] ?? '', $this);
     }
 
     /**
@@ -144,7 +152,6 @@ class Folder extends Model
             case self::TYPE_STARRED:
                 $order_by[] = ['status' => 'asc'];
                 $order_by[] = ['last_reply_at' => 'desc'];
-                //$order_by = [['conversation_folder.id' => 'desc']];
                 break;
 
             case self::TYPE_DRAFTS:
@@ -161,6 +168,30 @@ class Folder extends Model
             case self::TYPE_DELETED:
                 $order_by = [['user_updated_at' => 'desc']];
                 break;
+
+            default:
+                $order_by = \Eventy::filter('folder.conversations_order_by', $order_by, $this->type);
+                break;
+        }
+
+        // Process columns sorting.
+        $sorting = Conversation::getConvTableSorting();
+        if ($sorting['sort_by'] == 'date') {
+            if ($sorting['order'] != 'desc') {
+                 foreach ($order_by as $block_i => $block) {
+                    foreach ($block as $field => $order) {
+                        if ($field == 'status') {
+                            unset($order_by[$block_i][$field]);
+                        } else {
+                            if ($order == 'desc') {
+                                $order_by[$block_i][$field] = 'asc';
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            $order_by = [[$sorting['sort_by'] => $sorting['order']]];
         }
 
         return $order_by;
@@ -191,11 +222,14 @@ class Folder extends Model
 
     public function updateCounters()
     {
+        if (\Eventy::filter('folder.update_counters', false, $this)) {
+            return;
+        }
         if ($this->type == self::TYPE_MINE && $this->user_id) {
             $this->active_count = Conversation::where('user_id', $this->user_id)
                 ->where('mailbox_id', $this->mailbox_id)
-                ->where('status', Conversation::STATUS_ACTIVE)
                 ->where('state', Conversation::STATE_PUBLISHED)
+                ->where('status', Conversation::STATUS_ACTIVE)
                 ->count();
             $this->total_count = Conversation::where('user_id', $this->user_id)
                 ->where('mailbox_id', $this->mailbox_id)
@@ -237,7 +271,14 @@ class Folder extends Model
      */
     public function getCount($folders = [])
     {
-        if ($this->type == self::TYPE_STARRED || $this->type == self::TYPE_DRAFTS) {
+        $counter = \Eventy::filter('folder.counter', self::COUNTER_ACTIVE, $this, $folders);
+
+        $count = \Eventy::filter('folder.count', false, $this, $counter, $folders);
+        if ($count !== false) {
+            return $count;
+        }
+
+        if ($counter == self::COUNTER_TOTAL || $this->type == self::TYPE_STARRED || $this->type == self::TYPE_DRAFTS) {
             return $this->total_count;
         } else {
             return $this->getActiveCount($folders);
@@ -251,10 +292,14 @@ class Folder extends Model
     {
         $active_count = $this->active_count;
         if ($this->type == self::TYPE_ASSIGNED) {
-            if ($folders) {
-                $mine_folder = $folders->firstWhere('type', self::TYPE_MINE);
-            } else {
-                $mine_folder = $this->mailbox->folders()->where('type', self::TYPE_MINE)->first();
+            $mine_folder = \Eventy::filter('folder.active_count_mine_folder', null, $this, $folders);
+
+            if (!$mine_folder) {
+                if ($folders) {
+                    $mine_folder = $folders->firstWhere('type', self::TYPE_MINE);
+                } elseif ($this->mailbox_id) {
+                    $mine_folder = $this->mailbox->folders()->where('type', self::TYPE_MINE)->first();
+                }
             }
 
             if ($mine_folder) {
@@ -268,20 +313,27 @@ class Folder extends Model
         return $active_count;
     }
 
-    public function getConversationsQuery()
+    /**
+     * Query for waiting since.
+     */
+    public function getWaitingSinceQuery()
     {
+        $query = null;
+
         if ($this->type == self::TYPE_MINE) {
             // Assigned to user.
-            return Conversation::where('user_id', $this->user_id)
+            $query = Conversation::where('user_id', $this->user_id)
                 ->where('mailbox_id', $this->mailbox_id);
         } elseif ($this->isIndirect()) {
             // Via intermediate table.
-            return Conversation::join('conversation_folder', 'conversations.id', '=', 'conversation_folder.conversation_id')
+            $query = Conversation::join('conversation_folder', 'conversations.id', '=', 'conversation_folder.conversation_id')
                     ->where('conversation_folder.folder_id', $this->id);
         } else {
             // All other conversations.
-            return $this->conversations();
+            $query = $this->conversations();
         }
+
+        return \Eventy::filter('folder.waiting_since_query', $query, $this);
     }
 
     /**
@@ -292,7 +344,7 @@ class Folder extends Model
     public function getWaitingSince()
     {
         // Get oldest active conversation.
-        $conversation = $this->getConversationsQuery()
+        $conversation = $this->getWaitingSinceQuery()
             ->where('state', Conversation::STATE_PUBLISHED)
             ->where('status', Conversation::STATUS_ACTIVE)
             ->orderBy($this->getWaitingSinceField(), 'asc')
@@ -320,5 +372,40 @@ class Folder extends Model
         } else {
             return'last_reply_at';
         }
+    }
+
+    public function url($mailbox_id)
+    {
+        return \Eventy::filter('folder.url', route('mailboxes.view.folder', ['id'=>$mailbox_id, 'folder_id'=>$this->id]), $mailbox_id, $this);
+    }
+
+    public static function create($data, $unique_per_user = true, $save = true)
+    {
+        if (!isset($data['mailbox_id']) || !isset($data['type'])) {
+            return null;
+        }
+        $folder = new Folder ();
+        $folder->mailbox_id = $data['mailbox_id'];
+        $folder->type = $data['type'];
+
+        if (!empty($data['user_id'])) {
+            if ($unique_per_user) {
+                $user_folder = Folder::where('mailbox_id', $data['mailbox_id'])
+                    ->where('user_id', $data['user_id'])
+                    ->where('type', $data['type'])
+                    ->first();
+                // User folder already exists.
+                if ($user_folder) {
+                    return $user_folder;
+                }
+            }
+            $folder->user_id = $data['user_id'];
+        }
+
+        if ($save) {
+            $folder->save();
+        }
+
+        return $folder;
     }
 }

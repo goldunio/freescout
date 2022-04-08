@@ -44,7 +44,7 @@ class SendAutoReply implements ShouldQueue
     public function handle()
     {
         // Configure mail driver according to Mailbox settings
-        \App\Misc\Mail::setMailDriver($this->mailbox);
+        \App\Misc\Mail::setMailDriver($this->mailbox, null, $this->conversation);
 
         // Auto reply appears as reply in customer's mailbox
         $headers['In-Reply-To'] = '<'.$this->thread->message_id.'>';
@@ -55,6 +55,11 @@ class SendAutoReply implements ShouldQueue
         $headers['Message-ID'] = $message_id;
 
         $customer_email = $this->conversation->customer_email;
+
+        if (!$customer_email) {
+            // When message is received via Chat, customer has no email adddress.
+            return;
+        }
         $recipients = [$customer_email];
         $failures = [];
         $exception = null;

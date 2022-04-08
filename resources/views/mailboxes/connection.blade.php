@@ -11,7 +11,7 @@
 
 @section('content')
 
-    <div class="section-heading-noborder">
+    <div class="section-heading margin-bottom">
         {{ __('Connection Settings') }}
     </div>
 
@@ -57,29 +57,23 @@
                             <div class="control-group text-help margin-top-10">
                                 <ul>
                                     <li>
-                                        <a href="https://aws.amazon.com/ses/pricing/" target="_blank">Amazon SES</a> - 
-                                        <span class="text-help">{!! __("62,000 free emails per month from :%a_begin%Amazon EC2:%a_end% server.", ['%a_begin%' => '<a href="https://aws.amazon.com/ec2/" target="_blank">', '%a_end%' => '</a>']) !!}</span>
+                                        <a href="https://aws.amazon.com/ses/pricing/" target="_blank">Amazon SES</a> -
+                                        <span class="text-help">{!! __(":number free emails per month from :%a_begin%Amazon EC2:%a_end% server.", ['number' => '62 000', '%a_begin%' => '<a href="https://aws.amazon.com/ec2/" target="_blank">', '%a_end%' => '</a>']) !!}</span>
                                     </li>
                                     <li>
-                                        <a href="https://www.mailgun.com" target="_blank">Mailgun</a> - 
-                                        <span class="text-help">{{ __(":number free emails per month.", ['number' => '10,000']) }}</span>
+                                        <a href="https://www.mailgun.com" target="_blank">Mailgun</a> -
+                                        <span class="text-help">{{ __(":number free emails per month.", ['number' => '10 000']) }}</span>
                                     </li>
                                     <li>
-                                        <a href="https://www.sendinblue.com/?tap_a=30591-fb13f0&tap_s=294678-0b81e5" target="_blank">SendinBlue</a> - 
-                                        <span class="text-help">{{ __(":number free emails per month.", ['number' => '9,000']) }}</span>
+                                        <a href="https://www.sendinblue.com/?tap_a=30591-fb13f0&tap_s=294678-0b81e5" target="_blank">SendinBlue</a> -
+                                        <span class="text-help">{{ __(":number free emails per month.", ['number' => '9 000']) }}</span>
                                     </li>
                                     <li>
-                                        <a href="https://www.mailjet.com/?tap_a=25852-4bddf6&tap_s=545617-55177a&aff=545617-55177a" target="_blank">Mailjet</a> - 
-                                        <span class="text-help">{{ __(":number free emails per month.", ['number' => '6,000']) }}</span>
+                                        <a href="https://www.mailjet.com/?tap_a=25852-4bddf6&tap_s=545617-55177a&aff=545617-55177a" target="_blank">Mailjet</a> -
+                                        <span class="text-help">{{ __(":number free emails per month.", ['number' => '6 000']) }}</span>
                                     </li>
                                 </ul>
                             </div>
-                            {{--<div class="control-group">
-                                <label class="radio disabled" for="out_method_elastic">
-                                    <input type="radio" name="out_method" disabled value="elastic" id="out_method_elastic" @if ($mailbox->out_method == 'elastic') checked="checked" @endif> <a href="https://elasticemail.com/account#/create-account?r=bc0975e9-3d6b-462f-be7c-629e7672a4a8" target="_blank">Elastic Email</a><br/>
-                                    <span class="text-help">{{ __("150,000 free emails per month") }}</span>
-                                </label>
-                            </div>--}}
                         </div>
                     </div>
 
@@ -92,7 +86,7 @@
                                 <input id="out_server" type="text" class="form-control input-sized" name="out_server" value="{{ old('out_server', $mailbox->out_server) }}" maxlength="255"  @if ($mailbox->out_method == App\Mailbox::OUT_METHOD_SMTP) required @endif autofocus data-smtp-required="true">
 
 
-                                @if (strstr($mailbox->out_server, '.gmail.'))
+                                @if (strstr($mailbox->out_server ?? '', '.gmail.'))
                                     <div class="form-help">
                                         {!! __("Make sure to :%link_start%enable less secure apps:%link_end% in your Google account to send emails from Gmail.", ['%link_start%' => '<a href="https://myaccount.google.com/lesssecureapps?pli=1" target="_blank">', '%link_end%' => '</a>']) !!}
                                     </div>
@@ -134,8 +128,8 @@
                             <div class="col-sm-6">
                                 <select id="out_encryption" class="form-control input-sized" name="out_encryption" @if ($mailbox->out_method == App\Mailbox::OUT_METHOD_SMTP) required @endif autofocus data-smtp-required="true">
                                     <option value="{{ App\Mailbox::OUT_ENCRYPTION_NONE }}" @if (old('out_encryption', $mailbox->out_encryption) == App\Mailbox::OUT_ENCRYPTION_NONE)selected="selected"@endif>{{ __('None') }}</option>
-                                    <option value="{{ App\Mailbox::OUT_ENCRYPTION_SSL }}" @if (old('out_encryption', $mailbox->out_encryption) == App\Mailbox::OUT_ENCRYPTION_SSL)selected="selected"@endif>{{ __('SSL') }}</option>
-                                    <option value="{{ App\Mailbox::OUT_ENCRYPTION_TLS }}" @if (old('out_encryption', $mailbox->out_encryption) == App\Mailbox::OUT_ENCRYPTION_TLS)selected="selected"@endif>{{ __('TLS') }}</option>
+                                    <option value="{{ App\Mailbox::OUT_ENCRYPTION_SSL }}" @if (old('out_encryption', $mailbox->out_encryption) == App\Mailbox::OUT_ENCRYPTION_SSL)selected="selected"@endif>SSL</option>
+                                    <option value="{{ App\Mailbox::OUT_ENCRYPTION_TLS }}" @if (old('out_encryption', $mailbox->out_encryption) == App\Mailbox::OUT_ENCRYPTION_TLS)selected="selected"@endif>TLS</option>
                                 </select>
 
                                 @include('partials/field_error', ['field'=>'out_encryption'])
@@ -143,75 +137,22 @@
                         </div>
                         <hr/>
                     </div>
-                    
-                    {{--<div class="form-group margin-bottom-0">
-                        <label class="col-sm-2 control-label">{{ __('Improve Delivery') }}</label>
 
-                        <div class="col-sm-6">
-                            <div class="panel-group accordion">
-                                <div class="panel panel-default panel-spf">
-                                    <div class="panel-heading">
-                                        <h4 class="panel-title">
-                                            <a data-toggle="collapse" data-parent="#accordion" href="#collapse-spf">SPF 
-                                                <i class="label label-success accordion-status">Active</i>
-                                                <b class="caret"></b>
-                                            </a>
-                                        </h4>
-                                    </div>
-                                    <div id="collapse-spf" class="panel-collapse collapse">
-                                        <div class="panel-body">
-                                            <p>todo</p>
-                                        </div>
-                                    </div>
-                                </div>
+                    <div>
+                        <div class="form-group">
+                            <label for="send_test" class="col-sm-2 control-label">{{ __('Send Test To') }}</label>
 
-                                <div class="panel panel-default panel-ptr">
-                                    <div class="panel-heading">
-                                        <h4 class="panel-title">
-                                            <a data-toggle="collapse" data-parent="#accordion" href="#collapse-ptr">PTR 
-                                                <i class="label label-success accordion-status">Active</i>
-                                                <b class="caret"></b>
-                                            </a>
-                                        </h4>
-                                    </div>
-                                    <div id="collapse-ptr" class="panel-collapse collapse">
-                                        <div class="panel-body">
-                                            <p>todo</p>
-                                        </div>
-                                    </div>
+                            <div class="col-sm-6">
+                                <div class="input-group input-sized">
+                                    <input id="send_test" type="email" class="form-control" name="send_test_to" value="{{ old('email', \App\Option::get('send_test_to', $mailbox->email)) }}" maxlength="128" @if (!$mailbox->isOutActive()) disabled="disabled" @endif>
+                                    <span class="input-group-btn">
+                                        <button id="send-test-trigger" class="btn btn-default" type="button" data-loading-text="{{ __('Sending') }}…" @if (!$mailbox->isOutActive()) disabled="disabled" @endif>{{ __('Send Test') }}</button>
+                                    </span>
                                 </div>
-
-                                <div class="panel panel-default panel-dmarc">
-                                    <div class="panel-heading">
-                                        <h4 class="panel-title">
-                                            <a data-toggle="collapse" data-parent="#accordion" href="#collapse-dmarc">DMARC 
-                                                <i class="label label-success accordion-status">Active</i>
-                                                <b class="caret"></b>
-                                            </a>
-                                        </h4>
-                                    </div>
-                                    <div id="collapse-dmarc" class="panel-collapse collapse">
-                                        <div class="panel-body">
-                                            <p>todo</p>
-                                        </div>
-                                    </div>
-                                </div>
+                                <div class="form-help">{!! __("Make sure to save settings before testing.") !!}</div>
                             </div>
                         </div>
-                    </div>--}}
-
-                    <div class="form-group">
-                        <label for="send_test" class="col-sm-2 control-label">{{ __('Send Test To') }}</label>
-
-                        <div class="col-sm-6">
-                            <div class="input-group input-sized">
-                                <input id="send_test" type="email" class="form-control" name="send_test_to" value="{{ old('email', \App\Option::get('send_test_to', $mailbox->email)) }}" maxlength="128" @if (!$mailbox->isOutActive()) disabled="disabled" @endif>
-                                <span class="input-group-btn">
-                                    <button id="send-test-trigger" class="btn btn-default" type="button" data-loading-text="{{ __('Sending') }}…" @if (!$mailbox->isOutActive()) disabled="disabled" @endif>{{ __('Send Test') }}</button> 
-                                </span>
-                            </div>
-                            <div class="form-help">{!! __("Make sure to save settings before testing.") !!}</div>
-                        </div>
+                        <hr/>
                     </div>
 
                     <div class="form-group margin-top">

@@ -16,7 +16,7 @@
 
     @include('partials/flash_messages')
 
-    <div class="container">
+    <div class="container form-container">
         <div class="row">
             <div class="col-xs-12">
                 <form class="form-horizontal margin-top" method="POST" action="" enctype="multipart/form-data">
@@ -45,10 +45,24 @@
                                         <option value="{{ App\User::ROLE_ADMIN }}" @if (old('role', $user->role) == App\User::ROLE_ADMIN)selected="selected"@endif>{{ __('Administrator') }}</option>
                                     </select>
 
-                                    <i class="glyphicon glyphicon-info-sign icon-info" data-toggle="popover" data-trigger="hover" data-html="true" data-placement="left" data-title="{{ __('Roles') }}" data-content="{{ __('<strong>Administrators</strong> can create new users and have access to all mailboxes and settings <br><br><strong>Users</strong> have access to the mailbox(es) specified in their permissions') }}"></i>
+                                    <i class="glyphicon glyphicon-info-sign icon-info" data-toggle="popover" data-trigger="hover" data-html="true" data-placement="left" data-title="{{ __('Roles') }}" data-content="{{ __('<strong>Administrators</strong> can create new users and have access to all mailboxes and settings') }} <br><br>{{ __('<strong>Users</strong> have access to the mailbox(es) specified in their permissions') }}"></i>
                                 </div>
 
                                 @include('partials/field_error', ['field'=>'role'])
+                            </div>
+                        </div>
+                    @endif
+
+                    @if (auth()->user()->isAdmin() && $user->invite_state == App\User::INVITE_STATE_ACTIVATED)
+                        <div class="form-group{{ $errors->has('disabled') ? ' has-error' : '' }}">
+                            <label for="disabled" class="col-sm-2 control-label">{{ __('Disabled') }}</label>
+
+                            <div class="col-sm-6">
+         
+                                <div class="controls">
+                                    <label for="user_disabled" class="checkbox inline plain"><input type="checkbox" name="disabled" value="{{ App\User::STATUS_DISABLED }}" id="user_disabled" @if (old('disabled', $user->status) == App\User::STATUS_DISABLED)checked="checked"@endif> <span class="text-help">{{ __('Prevent user from logging in') }}</span></label>
+                                </div>
+                                @include('partials/field_error', ['field'=>'disabled'])
                             </div>
                         </div>
                     @endif
@@ -87,7 +101,11 @@
                         <label for="emails" class="col-sm-2 control-label">{{ __('Alternate Emails') }}</label>
 
                         <div class="col-sm-6">
-                            <input id="emails" type="text" class="form-control input-sized" name="emails" value="{{ old('emails', $user->emails) }}" placeholder="{{ __('(optional)') }}" maxlength="100">
+                            <div class="flexy">
+                                <input id="emails" type="text" class="form-control input-sized" name="emails" value="{{ old('emails', $user->emails) }}" placeholder="{{ __('(optional)') }}">
+
+                                <i class="glyphicon glyphicon-info-sign icon-info" data-toggle="popover" data-trigger="hover" data-html="true" data-placement="left" data-title="{{ __('Alternate Emails') }}" data-content="{{ __("Comma separated list off email addresses from which user can reply to email notifications in addition to user's main Email") }}"></i>
+                            </div>
 
                             @include('partials/field_error', ['field'=>'emails'])
                         </div>
@@ -181,13 +199,13 @@
                             <div class="controls">
                                 @if ($user->photo_url)
                                     <div id="user-profile-photo">
-                                        <img src="{{ $user->getPhotoUrl() }}" alt="{{ __('Profile Image') }}" width="50" height="50"><br/>
+                                        <img src="{{ $user->getPhotoUrl() }}" alt="{{ __('Photo') }}" width="50" height="50"><br/>
                                         <a href="#" id="user-photo-delete" data-loading-text="{{ __('Deleting') }}…">{{ __('Delete Photo') }}</a>
                                     </div>
                                 @endif
 
                                 <input type="file" name="photo_url">
-                                <p class="block-help">{{ __('Image will be re-sized to 200x200. JPG, GIF, PNG accepted.') }}</p>
+                                <p class="block-help">{{ __('Image will be re-sized to :dimensions. JPG, GIF, PNG accepted.', ['dimensions' => '50x50']) }}</p>
                             </div>
                             @include('partials/field_error', ['field'=>'photo_url'])
                         </div>
@@ -224,7 +242,7 @@
     <div id="delete_user_modal" class="hidden">
         <div>
         <div class="text-center">
-            <div class="col-sm-10 col-sm-offset-1 text-large margin-top-10 margin-bottom">{!! __("Deleting this User will deactivate workflows they are tied to and assign their conversations to:") !!}</div>
+            <div class="col-sm-10 col-sm-offset-1 text-large margin-top-10 margin-bottom">{!! __("Deleting :name will deactivate workflows they are tied to and assign their conversations to:", ['name' => '<strong>'.htmlspecialchars($user->getFullName()).'</strong>']) !!}</div>
             <form class="assign_form form-horizontal">
                 @foreach (App\Mailbox::all() as $mailbox)
                     <div class="col-sm-9 col-sm-offset-1">

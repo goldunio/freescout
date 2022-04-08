@@ -28,6 +28,7 @@ class ModulesController extends Controller
     {
         $installed_modules = [];
         $modules_directory = [];
+        $all_modules = [];
         $flashes = [];
         $updates_available = false;
 
@@ -53,7 +54,6 @@ class ModulesController extends Controller
         \Module::clearCache();
         $modules = \Module::all();
         foreach ($modules as $module) {
-            $img = '';
             $installed_modules[] = [
                 'alias'                        => $module->getAlias(),
                 'name'                         => $module->getName(),
@@ -65,7 +65,8 @@ class ModulesController extends Controller
                 'requiredAppVersion'           => $module->get('requiredAppVersion'),
                 'requiredPhpExtensions'        => $module->get('requiredPhpExtensions'),
                 'requiredPhpExtensionsMissing' => \App\Module::getMissingExtensions($module->get('requiredPhpExtensions')),
-                'img'                          => $img,
+                'requiredModulesMissing'       => \App\Module::getMissingModules($module->get('requiredModules'), $modules),
+                'img'                          => $module->get('img'),
                 'active'                       => $module->active(), //\App\Module::isActive($module->getAlias()),
                 'installed'                    => true,
                 'activated'                    => \App\Module::isLicenseActivated($module->getAlias(), $module->get('authorUrl')),
@@ -88,6 +89,7 @@ class ModulesController extends Controller
                 if (empty($dir_module['alias'])) {
                     unset($modules_directory[$i_dir]);
                 }
+                $all_modules[$dir_module['alias']] = $dir_module['name'];
                 foreach ($installed_modules as $i_installed => $module) {
                     if ($dir_module['alias'] == $module['alias']) {
                         // Set image from director
@@ -125,6 +127,7 @@ class ModulesController extends Controller
             'modules_directory' => $modules_directory,
             'flashes'           => $flashes,
             'updates_available' => $updates_available,
+            'all_modules'       => $all_modules,
         ]);
     }
 
@@ -275,7 +278,7 @@ class ModulesController extends Controller
                                 case 'inactive':
                                     $response['msg'] = __('License key has not been activated yet');
                                 case 'site_inactive':
-                                    $response['msg'] = __('This app has not been activated yet');
+                                    $response['msg'] = __('Your domain is deactivated');
                                     break;
                             }
                         }
@@ -307,9 +310,25 @@ class ModulesController extends Controller
                         $type = 'success';
                         $msg = __('":name" module successfully activated!', ['name' => $name]);
                     } else {
-                        // Deactivate module
+                        // Deactivate the module.
                         \App\Module::setActive($alias, false);
                         \Artisan::call('freescout:clear-cache');
+                    }
+
+                    // Check public folder.
+                    if ($module && file_exists($module->getPath().DIRECTORY_SEPARATOR.'Public')) {
+                        $public_folder = public_path().\Module::getPublicPath($alias);
+                        if (!file_exists($public_folder)) {
+                            $type = 'danger';
+                            $msg = 'Error occured creating a module symlink ('.$public_folder.'). Please check folder permissions.';
+                            \App\Module::setActive($alias, false);
+                            \Artisan::call('freescout:clear-cache');
+                        }
+                    }
+
+                    if ($type == 'success') {
+                        // Migrate again, in case migration did not work in the moment the module was activated.
+                        \Artisan::call('migrate', ['--force' => true]);
                     }
 
                     // \Session::flash does not work after BufferedOutput
@@ -354,6 +373,56 @@ class ModulesController extends Controller
                 ];
                 \Cache::forever('modules_flash', $flash);
                 $response['status'] = 'success';
+                break;
+
+            case 'deactivate_license':
+                $license = $request->license;
+                $alias = $request->alias;
+
+                if (!$license) {
+                    $response['msg'] = __('Empty license key');
+                }
+
+                if (!$response['msg']) {
+                    $params = [
+                        'license'      => $license,
+                        'module_alias' => $alias,
+                        'url'          => (!empty($request->any_url) ? '*' : \App\Module::getAppUrl()),
+                    ];
+                    $result = WpApi::deactivateLicense($params);
+
+                    if (WpApi::$lastError) {
+                        $response['msg'] = WpApi::$lastError['message'];
+                    } elseif (!empty($result['code']) && !empty($result['message'])) {
+                        $response['msg'] = $result['message'];
+                    } else {
+                        if (!empty($result['status']) && $result['status'] == 'success') {
+                            $db_module = \App\Module::getByAlias($alias);
+                            if ($db_module && trim($db_module->license) == trim($license)) {
+                                // Remove remembered license key and deactivate license in DB
+                                \App\Module::deactivateLicense($alias, '');
+
+                                // Deactivate module
+                                \App\Module::setActive($alias, false);
+                                \Artisan::call('freescout:clear-cache', []);
+                            }
+
+                            // Flash does not work here.
+                            $flash = [
+                                'text'      => '<strong>'.__('License successfully DEactivated!').'</strong>',
+                                'unescaped' => true,
+                                'type'      => 'success',
+                            ];
+                            \Cache::forever('modules_flash', $flash);
+
+                            $response['status'] = 'success';
+                        } elseif (!empty($result['error'])) {
+                            $response['msg'] = $this->getErrorMessage($result['error'], $result);
+                        } else {
+                            $response['msg'] = __('Error occured. Please try again later.');
+                        }
+                    }
+                }
                 break;
 
             case 'delete':
@@ -515,7 +584,7 @@ class ModulesController extends Controller
                 $msg = __('License key has been revoked');
                 break;
             case 'no_activations_left':
-                $msg = __('No activations left for this license key');
+                $msg = __('No activations left for this license key').' ('.__('Use Deactivate License button to transfer license key from another domain').')';
                 break;
             case 'expired':
                 $msg = __('License key has expired');

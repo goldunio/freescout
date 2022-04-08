@@ -74,7 +74,7 @@ var editor = renderer.create('<div class="note-editor note-frame panel"/>');
 var toolbar = renderer.create('<div class="note-toolbar-wrapper panel-default"><div class="note-toolbar panel-heading"></div></div>');
 var editingArea = renderer.create('<div class="note-editing-area"/>');
 var codable = renderer.create('<textarea class="note-codable"/>');
-var editable = renderer.create('<div class="note-editable" contentEditable="true"/>');
+var editable = renderer.create('<div class="note-editable" dir="auto" contentEditable="true"/>');
 var statusbar = renderer.create([
     '<div class="note-statusbar">',
     '  <div class="note-resizebar">',
@@ -94,7 +94,7 @@ var dropdown = renderer.create('<div class="dropdown-menu">', function ($node, o
         var option = (typeof item === 'object') ? item.option : undefined;
         var dataValue = 'data-value="' + value + '"';
         var dataOption = (option !== undefined) ? ' data-option="' + option + '"' : '';
-        return '<li><a href="#" ' + (dataValue + dataOption) + '>' + content + '</a></li>';
+        return '<li aria-label="' + value + '"><a href="#" ' + (dataValue + dataOption) + '>' + content + '</a></li>';
     }).join('') : options.items;
     $node.html(markup);
 });
@@ -204,7 +204,8 @@ var ui = {
         return renderer.create('<button type="button" class="note-btn btn btn-default btn-sm" tabindex="-1">', function ($node, options) {
             if (options && options.tooltip) {
                 $node.attr({
-                    title: options.tooltip
+                    title: options.tooltip,
+                    'aria-label': options.tooltip
                 }).tooltip({
                     container: options.container,
                     trigger: 'hover',
@@ -4475,6 +4476,7 @@ var Clipboard = /** @class */ (function () {
             var item = lists.head(clipboardData.items);
             if (item.kind === 'file' && item.type.indexOf('image/') !== -1) {
                 this.context.invoke('editor.insertImagesOrCallback', [item.getAsFile()]);
+                event.preventDefault();
             }
             this.context.invoke('editor.afterCommand');
         }
@@ -5456,7 +5458,7 @@ var Buttons = /** @class */ (function () {
             return _this.button({
                 className: 'btn-codeview',
                 contents: _this.ui.icon(_this.options.icons.code),
-                tooltip: _this.options.codeview,
+                tooltip: _this.lang.options.codeview,
                 click: _this.context.createInvokeHandler('codeview.toggle')
             }).render();
         });
@@ -6651,9 +6653,10 @@ var HintPopover = /** @class */ (function () {
         }).render().appendTo(this.options.container);
         this.$popover.hide();
         this.$content = this.$popover.find('.popover-content,.note-popover-content');
-        this.$content.on('click', '.note-hint-item', function () {
+        this.$content.on('click', '.note-hint-item', function (e) {
             _this.$content.find('.active').removeClass('active');
-            $$1(_this).addClass('active');
+            //$$1(_this).addClass('active');
+            $(e.currentTarget).addClass('active');
             _this.replace();
         });
     };

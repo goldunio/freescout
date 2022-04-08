@@ -41,10 +41,10 @@ return [
             'provider' => 'users',
         ],
 
-        'api' => [
-            'driver'   => 'token',
-            'provider' => 'users',
-        ],
+        // 'api' => [
+        //     'driver'   => 'token',
+        //     'provider' => 'users',
+        // ],
     ],
 
     /*
@@ -96,6 +96,7 @@ return [
             'provider' => 'users',
             'table'    => 'password_resets',
             'expire'   => 60,
+            'throttle' => 60,
         ],
     ],
 

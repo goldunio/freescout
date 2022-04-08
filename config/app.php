@@ -12,7 +12,7 @@ return [
     | or any other location as required by the application or its packages.
     */
 
-    'version' => '1.3.7',
+    'version' => '1.8.11',
 
     /*
     |--------------------------------------------------------------------------
@@ -92,7 +92,8 @@ return [
     */
 
     'locale'          => env('APP_LOCALE', 'en'),
-    'locales'         => ['en', 'fr', 'it', 'pt-PT', 'pt-BR'],
+    'locales'         => ['en', 'hr', 'da', 'nl', 'fr', 'de', 'ja', 'it', 'fa', 'pl', 'pt-PT', 'pt-BR', 'ru', 'es', 'sk', 'sv'],
+    'locales_rtl'     => ['fa'],
     'default_locale'  => 'en',
 
     /*
@@ -159,6 +160,7 @@ return [
     |-------------------------------------------------------------------------
     */
     'freescout_api' => 'https://freescout.net/wp-json/',
+    'freescout_alt_api' => 'https://cdn.freescout.net/wp-json/',
 
     /*
     |--------------------------------------------------------------------------
@@ -180,7 +182,7 @@ return [
     | Checks for new jobs every --sleep seconds.
     | If --tries is set and job fails it is being processed right away without any delay.
     | --delay parameter does not work to set delays between retry attempts.
-    /
+    |
     | Jobs sending emails are retried manually in handle().
     | Number of retries is set in each job class.
     |-------------------------------------------------------------------------
@@ -192,7 +194,7 @@ return [
     | PHP extensions required by the app
     |-------------------------------------------------------------------------
     */
-    'required_extensions' => ['mysql / mysqli', 'mbstring', 'xml', 'imap', /*'mcrypt' mcrypt is deprecated*/ 'json', 'gd', 'fileinfo', 'openssl', 'zip', 'tokenizer'/*, 'dom', 'xmlwriter', 'libxml', 'phar'*/],
+    'required_extensions' => ['mysql / mysqli', 'mbstring', 'xml', 'imap', /*'mcrypt' mcrypt is deprecated*/ 'json', 'gd', 'fileinfo', 'openssl', 'zip', 'tokenizer', 'curl'/*, 'dom', 'xmlwriter', 'libxml', 'phar'*/],
 
     /*
     |--------------------------------------------------------------------------
@@ -245,6 +247,102 @@ return [
         'email_branding'     => ['default' => true],
         'open_tracking'      => ['default' => true],
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | php - attachments are downloaded via PHP.
+    |
+    | apache - attachments are downloaded via Apache's mod_xsendfile.
+    |
+    | nginx - attachments are downloaded via nginx's X-Accel-Redirect.
+    |-------------------------------------------------------------------------
+    */
+    'download_attachments_via'    => env('APP_DOWNLOAD_ATTACHMENTS_VIA', 'php'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | File types which should be viewed in the browser instead of downloading.
+    | SVG images are not viewable to avid XSS.
+    |-------------------------------------------------------------------------
+    */
+    'viewable_attachments'    => env('APP_VIEWABLE_ATTACHMENTS', ['jpg', 'jpeg', 'jfif', 'pjpeg', 'pjp', 'apng', 'bmp', 'gif', 'ico', 'cur', 'png', 'tif', 'tiff', 'webp', 'pdf', 'txt', 'mp3', 'wav', 'ogg', 'wma']),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Case insensitive regular expression, containing a list of
+    | mail server error responses, returned when a mail server can not deliver an email
+    | to one or more recipients. If FreeScout receives one of the listed
+    | error responses from the mail server, it does not try to resend the email
+    | to avoid sending multiple duplicate emails to other recipients.
+    |
+    | https://github.com/freescout-helpdesk/freescout/issues/870#issuecomment-786477909
+    |
+    |-------------------------------------------------------------------------
+    */
+    'no_retry_mail_errors'    => env('APP_NO_RETRY_MAIL_ERRORS', '(no valid recipients|does not comply with RFC)'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | none - send to the customer only agent's reply in the email.
+    |
+    | last - send to the customer the last message in the email.
+    |
+    | full - send to the customer full conversation history in the email.
+    |
+    |-------------------------------------------------------------------------
+    */
+    'email_conv_history'    => env('APP_EMAIL_CONV_HISTORY', 'none'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | none - send to the user only agent's reply in the email.
+    |
+    | last - send to the user the last message in the email.
+    |
+    | full - send to the user full conversation history in the email.
+    |
+    |-------------------------------------------------------------------------
+    */
+    'email_user_history'    => env('APP_EMAIL_USER_HISTORY', 'full'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | JSON containing user permissions.
+    |
+    |-------------------------------------------------------------------------
+    */
+    'user_permissions'    => env('APP_USER_PERMISSIONS', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Dashboard path.
+    |
+    |-------------------------------------------------------------------------
+    */
+    'dashboard_path'    => env('APP_DASHBOARD_PATH', ''),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Dashboard path.
+    |
+    |-------------------------------------------------------------------------
+    */
+    'login_path'    => env('APP_LOGIN_PATH', 'login'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Home page controller.
+    |
+    |-------------------------------------------------------------------------
+    */
+    'home_controller'    => env('APP_HOMEPAGE_CONTROLLER', 'SecureController@dashboard'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Disable update checker
+    |--------------------------------------------------------------------------
+    */
+    'disable_updating'    => env('APP_DISABLE_UPDATING', false),
 
     /*
     |--------------------------------------------------------------------------

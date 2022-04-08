@@ -44,7 +44,9 @@
 
             </div>
         </div>
-        <div id="conv-layout-customer"></div>
+        <div id="conv-layout-customer">
+            @action('conversation.new.customer_sidebar', $conversation, $mailbox)
+        </div>
         <div id="conv-layout-main" class="conv-new-form">
             <div class="conv-block">
                 <div class="row">
@@ -144,6 +146,10 @@
                                         @endif
                                     </select>
 
+                                    <label class="checkbox @if (count($to) <= 1) hidden @endif" for="multiple_conversations" id="multiple-conversations-wrap">
+                                        <input type="checkbox" name="multiple_conversations" value="1" id="multiple_conversations"> {{ __('Send emails separately to each recipient') }}
+                                    </label>
+
                                     @include('partials/field_error', ['field'=>'to'])
                                 </div>
                             </div>
@@ -189,11 +195,11 @@
                                 <label for="subject" class="col-sm-2 control-label">{{ __('Subject') }}</label>
 
                                 <div class="col-sm-9">
-                                    <input id="subject" type="text" class="form-control" name="subject" value="{{ old('subject', $conversation->subject) }}" maxlength="998" required autofocus>
-
+                                    <input id="subject" type="text" class="form-control" name="subject" value="{{ old('subject', $conversation->subject) }}" maxlength="998" required autofocus>@action('conversation.create_form.subject_append')
                                     @include('partials/field_error', ['field'=>'subject'])
                                 </div>
                             </div>
+                            @action('conversation.create_form.after_subject', $conversation, $mailbox, $thread)
 
                             <div class="thread-attachments attachments-upload">
                                 <ul></ul>
@@ -222,6 +228,6 @@
 
 @section('javascript')
     @parent
-    initReplyForm(true, true);
+    initReplyForm(true, true, true);
     initNewConversation(@if ($conversation->type == App\Conversation::TYPE_PHONE){{ 'true' }}@endif);
 @endsection

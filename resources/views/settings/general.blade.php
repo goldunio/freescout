@@ -29,13 +29,82 @@
         <label for="email" class="col-sm-2 control-label">{{ __('User Permissions') }}</label>
 
         <div class="col-sm-6">
-            @foreach (App\User::$user_permissions as $permission_id)
+            @foreach (App\User::getUserPermissionsList() as $permission_id)
                 <div class="control-group">
                     <label class="checkbox" for="user_permission_{{ $permission_id }}">
                         <input type="checkbox" name="settings[user_permissions][]" value="{{ $permission_id }}" id="user_permission_{{ $permission_id }}" @if (in_array($permission_id, old('settings[user_permissions]', $settings['user_permissions']))) checked="checked" @endif> {{ App\User::getUserPermissionName($permission_id) }}
                     </label>
                 </div>
             @endforeach
+        </div>
+    </div>
+
+    <div class="form-group{{ $errors->has('settings[locale]') ? ' has-error' : '' }}">
+        <label for="locale" class="col-sm-2 control-label">{{ __('Default Language') }}</label>
+
+        <div class="col-sm-6">
+            <select id="locale" class="form-control input-sized" name="settings[locale]" required autofocus>
+                @include('partials/locale_options', ['selected' => old('settings[locale]', $settings['locale'])])
+            </select>
+
+            @include('partials/field_error', ['field'=>'settings.timezone'])
+        </div>
+    </div>
+
+    <div class="form-group{{ $errors->has('settings[timezone]') ? ' has-error' : '' }}">
+        <label for="timezone" class="col-sm-2 control-label">{{ __('Timezone') }}</label>
+
+        <div class="col-sm-6">
+            <select id="timezone" class="form-control input-sized" name="settings[timezone]" required autofocus>
+                @include('partials/timezone_options', ['current_timezone' => old('settings[timezone]', \Config::get('app.timezone'))])
+            </select>
+
+            @include('partials/field_error', ['field'=>'settings.timezone'])
+        </div>
+    </div>
+
+    <div class="form-group{{ $errors->has('settings[time_format]') ? ' has-error' : '' }}">
+        <label for="time_format" class="col-sm-2 control-label">{{ __('Time Format') }}</label>
+
+        <div class="col-sm-6">
+
+            <div class="controls">
+                <label for="12hour" class="radio inline plain"><input type="radio" name="settings[time_format]" value="{{ App\User::TIME_FORMAT_12 }}" id="12hour" @if (old('settings[time_format]', $settings['time_format']) == App\User::TIME_FORMAT_12)checked="checked"@endif> {{ __('12-hour clock (e.g. 2:13pm)') }}</label>
+                <label for="24hour" class="radio inline"><input type="radio" name="settings[time_format]" value="{{ App\User::TIME_FORMAT_24 }}" id="24hour" @if (old('settings[time_format]', $settings['time_format']) == App\User::TIME_FORMAT_24 || !$settings['time_format'])checked="checked"@endif> {{ __('24-hour clock (e.g. 14:13)') }}</label>
+            </div>
+            @include('partials/field_error', ['field'=>'settings.time_format'])
+        </div>
+    </div>
+
+    <h3 class="subheader">{{ __('Emails to Customers') }}</h3>
+
+    <div class="form-group{{ $errors->has('settings[email_conv_history]') ? ' has-error' : '' }}">
+        <label for="email_conv_history" class="col-sm-2 control-label">{{ __('Conversation History') }}</label>
+
+        <div class="col-sm-6">
+            <select id="email_conv_history" class="form-control input-sized" name="settings[email_conv_history]" required autofocus>
+                <option value="none" @if (old('settings[email_conv_history]', $settings['email_conv_history']) == 'none')selected="selected"@endif>{{ __('Do not include previous messages') }}</option>
+                <option value="last" @if (old('settings[email_conv_history]', $settings['email_conv_history']) == 'last')selected="selected"@endif>{{ __('Include the last message') }}</option>
+                <option value="full" @if (old('settings[email_conv_history]', $settings['email_conv_history']) == 'full')selected="selected"@endif>{{ __('Send full conversation history') }}</option>
+            </select>
+
+            @include('partials/field_error', ['field'=>'settings.email_conv_history'])
+        </div>
+    </div>
+
+    <div class="form-group{{ $errors->has('settings[open_tracking]') ? ' has-error' : '' }}">
+        <label for="open_tracking" class="col-sm-2 control-label">{{ __('Open Tracking') }}</label>
+
+        <div class="col-sm-6">
+            <div class="controls">
+                <div class="onoffswitch-wrap">
+                    <div class="onoffswitch">
+                        <input type="checkbox" name="settings[open_tracking]" value="1" id="open_tracking" class="onoffswitch-checkbox" @if (old('settings[open_tracking]', $settings['open_tracking']))checked="checked"@endif >
+                        <label class="onoffswitch-label" for="open_tracking"></label>
+                    </div>
+                </div>
+            </div>
+            @include('partials/field_error', ['field'=>'settings.open_tracking'])
         </div>
     </div>
 
@@ -58,86 +127,23 @@
         </div>
     </div>
 
-    <div class="form-group{{ $errors->has('settings[open_tracking]') ? ' has-error' : '' }}">
-        <label for="open_tracking" class="col-sm-2 control-label">{{ __('Open Tracking') }}</label>
+    <h3 class="subheader">{{ __('Notification Emails to Users') }}</h3>
+
+    <div class="form-group{{ $errors->has('settings[email_user_history]') ? ' has-error' : '' }}">
+        <label for="email_user_history" class="col-sm-2 control-label">{{ __('Conversation History') }}</label>
 
         <div class="col-sm-6">
-            <div class="controls">
-                <div class="onoffswitch-wrap">
-                    <div class="onoffswitch">
-                        <input type="checkbox" name="settings[open_tracking]" value="1" id="open_tracking" class="onoffswitch-checkbox" @if (old('settings[open_tracking]', $settings['open_tracking']))checked="checked"@endif >
-                        <label class="onoffswitch-label" for="open_tracking"></label>
-                    </div>
-                </div>
-            </div>
-            @include('partials/field_error', ['field'=>'settings.open_tracking'])
-        </div>
-    </div>
-
-    <div class="form-group{{ $errors->has('settings[enrich_customer_data]') ? ' has-error' : '' }}" style="display:none">
-        <label for="enrich_customer_data" class="col-sm-2 control-label">{{ __('Enrich Customer Data') }} (todo)</label>
-
-        <div class="col-sm-6">
-            <div class="controls">
-                <div class="onoffswitch-wrap">
-                    <div class="onoffswitch">
-                        <input type="checkbox" name="settings[enrich_customer_data]" value="1" id="enrich_customer_data" class="onoffswitch-checkbox" @if (old('settings[enrich_customer_data]', $settings['enrich_customer_data']))checked="checked"@endif >
-                        <label class="onoffswitch-label" for="enrich_customer_data"></label>
-                    </div>
-
-                    <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-content="{{ __('Auto-update your customers profile with avatars, social, and location data.') }}"></i>
-                </div>
-            </div>
-            @include('partials/field_error', ['field'=>'settings.enrich_customer_data'])
-        </div>
-    </div>
-
-    <div class="form-group{{ $errors->has('settings[locale]') ? ' has-error' : '' }}">
-        <label for="locale" class="col-sm-2 control-label">{{ __('Default Language') }}</label>
-
-        <div class="col-sm-6">
-            <select id="locale" class="form-control input-sized" name="settings[locale]" required autofocus>
-                @include('partials/locale_options', ['selected' => old('settings[locale]', $settings['locale'])])
+            <select id="email_user_history" class="form-control input-sized" name="settings[email_user_history]" required autofocus>
+                <option value="none" @if (old('settings[email_user_history]', $settings['email_user_history']) == 'none')selected="selected"@endif>{{ __('Do not include previous messages') }}</option>
+                <option value="last" @if (old('settings[email_user_history]', $settings['email_user_history']) == 'last')selected="selected"@endif>{{ __('Include the last message') }}</option>
+                <option value="full" @if (old('settings[email_user_history]', $settings['email_user_history']) == 'full')selected="selected"@endif>{{ __('Send full conversation history') }}</option>
             </select>
 
-            {{--<div class="help-block">
-                {{ __('Value is set in .env file using APP_TIMEZONE parameter.') }}
-            </div>--}}
-
-            @include('partials/field_error', ['field'=>'settings.timezone'])
+            @include('partials/field_error', ['field'=>'settings.email_user_history'])
         </div>
     </div>
 
-    <div class="form-group{{ $errors->has('settings[timezone]') ? ' has-error' : '' }}">
-        <label for="timezone" class="col-sm-2 control-label">{{ __('Timezone') }}</label>
-
-        <div class="col-sm-6">
-            <select id="timezone" class="form-control input-sized" name="settings[timezone]" required autofocus>
-                @include('partials/timezone_options', ['current_timezone' => old('settings[timezone]', \Config::get('app.timezone'))])
-            </select>
-
-            {{--<div class="help-block">
-                {{ __('Value is set in .env file using APP_TIMEZONE parameter.') }}
-            </div>--}}
-
-            @include('partials/field_error', ['field'=>'settings.timezone'])
-        </div>
-    </div>
-
-    <div class="form-group{{ $errors->has('settings[time_format]') ? ' has-error' : '' }}">
-        <label for="time_format" class="col-sm-2 control-label">{{ __('Time Format') }}</label>
-
-        <div class="col-sm-6">
-
-            <div class="controls">
-                <label for="12hour" class="radio inline plain"><input type="radio" name="settings[time_format]" value="{{ App\User::TIME_FORMAT_12 }}" id="12hour" @if (old('settings[time_format]', $settings['time_format']) == App\User::TIME_FORMAT_12)checked="checked"@endif> {{ __('12-hour clock (e.g. 2:13pm)') }}</label>
-                <label for="24hour" class="radio inline"><input type="radio" name="settings[time_format]" value="{{ App\User::TIME_FORMAT_24 }}" id="24hour" @if (old('settings[time_format]', $settings['time_format']) == App\User::TIME_FORMAT_24 || !$settings['time_format'])checked="checked"@endif> {{ __('24-hour clock (e.g. 14:13)') }}</label>
-            </div>
-            @include('partials/field_error', ['field'=>'settings.time_format'])
-        </div>
-    </div>
-
-    <div class="form-group">
+    <div class="form-group margin-top">
         <div class="col-sm-6 col-sm-offset-2">
             <button type="submit" class="btn btn-primary">
                 {{ __('Save') }}

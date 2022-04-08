@@ -10,6 +10,8 @@ use Symfony\Component\Console\Output\BufferedOutput;
 
 class SystemController extends Controller
 {
+    public static $latest_version_error = '';
+
     /**
      * Create a new controller instance.
      *
@@ -17,7 +19,9 @@ class SystemController extends Controller
      */
     public function __construct()
     {
-        $this->middleware('auth');
+        $this->middleware('auth', ['except' => [
+            'cron'
+        ]]);
     }
 
     /**
@@ -41,6 +45,13 @@ class SystemController extends Controller
             }
         }
 
+        // Functions.
+        $functions = [
+            'shell_exec (PHP)' => function_exists('shell_exec'),
+            'proc_open (PHP)' => function_exists('proc_open'),
+            'ps (shell)' => function_exists('shell_exec') ? shell_exec('ps') : false,
+        ];
+
         // Permissions.
         $permissions = [];
         foreach (config('installer.permissions') as $perm_path => $perm_value) {
@@ -54,6 +65,18 @@ class SystemController extends Controller
                 'value'  => $value,
             ];
         }
+
+        // Check if cache files are writable.
+        $non_writable_cache_file = '';
+        if (function_exists('shell_exec')) {
+            $non_writable_cache_file = shell_exec('find '.base_path('storage/framework/cache/data/').' -type f | xargs -I {} sh -c \'[ ! -w "{}" ] && echo {}\' 2>&1 | head -n 1');
+            $non_writable_cache_file = trim($non_writable_cache_file ?? '');
+            if (!strstr($non_writable_cache_file, base_path('storage/framework/cache/data/'))) {
+                $non_writable_cache_file = '';
+            }
+        }
+        
+
         // Check if public symlink exists, if not, try to create.
         $public_symlink_exists = true;
         $public_path = public_path('storage');
@@ -76,8 +99,11 @@ class SystemController extends Controller
         $failed_queues = $failed_jobs->pluck('queue')->unique();
 
         // Commands
-        $commands_list = ['freescout:fetch-emails', 'queue:work'];
-        foreach ($commands_list as $command_name) {
+        $commands_list = [
+            'freescout:fetch-emails' => 'freescout:fetch-emails',
+            \Helper::getWorkerIdentifier() => 'queue:work'
+        ];
+        foreach ($commands_list as $command_identifier => $command_name) {
             $status_texts = [];
 
             // Check if command is running now
@@ -85,7 +111,7 @@ class SystemController extends Controller
                 $running_commands = 0;
 
                 try {
-                    $processes = preg_split("/[\r\n]/", shell_exec("ps aux | grep '{$command_name}'"));
+                    $processes = preg_split("/[\r\n]/", shell_exec("ps aux | grep '{$command_identifier}'"));
                     $pids = [];
                     foreach ($processes as $process) {
                         preg_match("/^[\S]+\s+([\d]+)\s+/", $process, $m);
@@ -163,14 +189,23 @@ class SystemController extends Controller
             ];
         }
 
-        // Check new version
+        // Check new version if enabled
         $new_version_available = false;
-        $latest_version = \Cache::remember('latest_version', 15, function () {
-            return \Updater::getVersionAvailable();
-        });
+        if (!\Config::get('app.disable_updating')) {
+            $latest_version = \Cache::remember('latest_version', 15, function () {
+                try {
+                    return \Updater::getVersionAvailable();
+                } catch (\Exception $e) {
+                    SystemController::$latest_version_error = $e->getMessage();
+                    return '';
+                }
+            });
 
-        if ($latest_version && version_compare($latest_version, \Config::get('app.version'), '>')) {
-            $new_version_available = true;
+            if ($latest_version && version_compare($latest_version, \Config::get('app.version'), '>')) {
+                $new_version_available = true;
+            }
+        } else {
+            $latest_version = \Config::get('app.version');
         }
 
         return view('system/status', [
@@ -179,17 +214,25 @@ class SystemController extends Controller
             'failed_jobs'           => $failed_jobs,
             'failed_queues'         => $failed_queues,
             'php_extensions'        => $php_extensions,
+            'functions'             => $functions,
             'permissions'           => $permissions,
             'new_version_available' => $new_version_available,
             'latest_version'        => $latest_version,
+            'latest_version_error'  => SystemController::$latest_version_error,
             'public_symlink_exists' => $public_symlink_exists,
             'env_is_writable'       => $env_is_writable,
+            'non_writable_cache_file' => $non_writable_cache_file,
         ]);
     }
 
     public function action(Request $request)
     {
         switch ($request->action) {
+            case 'cancel_job':
+                \App\Job::where('id', $request->job_id)->delete();
+                \Session::flash('flash_success_floating', __('Done'));
+                break;
+
             case 'delete_failed_jobs':
                 \App\FailedJob::where('queue', $request->failed_queue)->delete();
                 \Session::flash('flash_success_floating', __('Failed jobs deleted'));
@@ -248,6 +291,10 @@ class SystemController extends Controller
             case 'migrate_db':
                 \Artisan::call('migrate', ['--force' => true], $outputLog);
                 break;
+
+            case 'logout_users':
+                \Artisan::call('freescout:logout-users', [], $outputLog);
+                break;
         }
 
         $output = $outputLog->fetch();
@@ -276,7 +323,7 @@ class SystemController extends Controller
             case 'update':
                 try {
                     $status = \Updater::update();
-                    
+
                     // Artisan::output()
                 } catch (\Exception $e) {
                     $response['msg'] = __('Error occured. Please try again or try another :%a_start%update method:%a_end%', ['%a_start%' => '<a href="'.config('app.freescout_url').'/docs/update/" target="_blank">', '%a_end%' => '</a>']);
@@ -292,14 +339,18 @@ class SystemController extends Controller
                 break;
 
             case 'check_updates':
-                try {
-                    $response['new_version_available'] = \Updater::isNewVersionAvailable(config('app.version'));
-                    $response['status'] = 'success';
-                } catch (\Exception $e) {
-                    $response['msg'] = __('Error occured').': '.$e->getMessage();
-                }
-                if (!$response['msg'] && !$response['new_version_available']) {
-                    // Adding session flash is useless as cache is cleated
+                if (!\Config::get('app.disable_updating')) {
+                    try {
+                        $response['new_version_available'] = \Updater::isNewVersionAvailable(config('app.version'));
+                        $response['status'] = 'success';
+                    } catch (\Exception $e) {
+                        $response['msg'] = __('Error occured').': '.$e->getMessage();
+                    }
+                    if (!$response['msg'] && !$response['new_version_available']) {
+                        // Adding session flash is useless as cache is cleated
+                        $response['msg_success'] = __('You have the latest version installed');
+                    }
+                } else {
                     $response['msg_success'] = __('You have the latest version installed');
                 }
                 break;
@@ -314,5 +365,20 @@ class SystemController extends Controller
         }
 
         return \Response::json($response);
+    }
+
+    /**
+     * Web Cron.
+     */
+    public function cron(Request $request)
+    {
+        if (empty($request->hash) || $request->hash != \Helper::getWebCronHash()) {
+            abort(404);
+        }
+        $outputLog = new BufferedOutput();
+        \Artisan::call('schedule:run', [], $outputLog);
+        $output = $outputLog->fetch();
+
+        return response($output, 200)->header('Content-Type', 'text/plain');
     }
 }

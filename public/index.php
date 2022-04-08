@@ -1,8 +1,8 @@
 <?php
 
 // Check PHP version
-if (!version_compare(phpversion(), '7.0.0', '>=')) {
-    echo 'PHP 7.x is required to run FreeScout.';
+if (!version_compare(phpversion(), '7.1.0', '>=')) {
+    echo 'PHP 7.1+ is required to run FreeScout. Your PHP version: '.phpversion();
     exit();
 }
 
@@ -17,6 +17,25 @@ if (preg_match("#^/public\/(.*)#", $_SERVER['REQUEST_URI'], $m) && !empty($m[1])
  * @author   Taylor Otwell <taylor@laravel.com>
  */
 define('LARAVEL_START', microtime(true));
+
+// PHP 8.1 fix.
+if (! function_exists('e')) {
+    /**
+     * Escape HTML special characters in a string.
+     *
+     * @param  \Illuminate\Contracts\Support\Htmlable|string  $value
+     * @param  bool  $doubleEncode
+     * @return string
+     */
+    function e($value, $doubleEncode = false)
+    {
+        if ($value instanceof \Illuminate\Contracts\Support\Htmlable) {
+            return $value->toHtml();
+        }
+
+        return htmlspecialchars($value ?? '', ENT_QUOTES, 'UTF-8', $doubleEncode);
+    }
+}
 
 /*
 |--------------------------------------------------------------------------

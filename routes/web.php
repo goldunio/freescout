@@ -15,15 +15,27 @@
 
 Auth::routes();
 
-// Redirects
-Route::redirect('/home', '/', 301);
+Route::get(config('app.login_path'), 'Auth\LoginController@showLoginForm')->name('login');
+Route::post(config('app.login_path'), 'Auth\LoginController@login');
+
+// Authentication redirects to /home
+// if APP_DASHBOARD_PATH is empty APP_URL will be used
+if (config('app.dashboard_path')) {
+	Route::redirect('/home', config('app.url').'/'.config('app.dashboard_path'), 302);
+} else {
+	Route::redirect('/home', config('app.url'), 302);
+}
 
 // Public routes
 Route::get('/user-setup/{hash}', 'PublicController@userSetup')->name('user_setup');
 Route::post('/user-setup/{hash}', 'PublicController@userSetupSave');
+Route::get('/storage/attachment/{dir_1}/{dir_2}/{dir_3}/{file_name}', 'PublicController@downloadAttachment')->name('attachment.download');
 
 // General routes for logged in users
-Route::get('/', 'SecureController@dashboard')->name('dashboard');
+if (config('app.dashboard_path')) {
+	Route::get('/', config('app.home_controller'));
+}
+Route::get('/'.config('app.dashboard_path'), 'SecureController@dashboard')->name('dashboard');
 Route::get('/app-logs/app', ['uses' => '\Rap2hpoutre\LaravelLogViewer\LogViewerController@index', 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('logs.app');
 Route::get('/app-logs/{name?}', ['uses' => 'SecureController@logs', 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('logs');
 Route::post('/app-logs/{name?}', ['uses' => 'SecureController@logsSubmit', 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('logs.action');
@@ -75,12 +87,16 @@ Route::post('/mailbox/connection-settings/{id}/incoming', 'MailboxesController@c
 Route::get('/mailbox/settings/{id}/auto-reply', 'MailboxesController@autoReply')->name('mailboxes.auto_reply');
 Route::post('/mailbox/settings/{id}/auto-reply', 'MailboxesController@autoReplySave')->name('mailboxes.auto_reply.save');
 Route::post('/mailbox/ajax', ['uses' => 'MailboxesController@ajax', 'laroute' => true])->name('mailboxes.ajax');
+Route::get('/mailbox/oauth/{id}/{provider}', ['uses' => 'MailboxesController@oauth'])->name('mailboxes.oauth');
+Route::get('/mailbox/oauth', ['uses' => 'MailboxesController@oauth'])->name('mailboxes.oauth_callback');
+Route::get('/mailbox/oauth-disconnect/{id}/{provider}', ['uses' => 'MailboxesController@oauthDisconnect'])->name('mailboxes.oauth_disconnect');
 
 // Customers
-Route::get('/customer/{id}/edit', 'CustomersController@update')->name('customers.update');
-Route::post('/customer/{id}/edit', 'CustomersController@updateSave');
-Route::get('/customer/{id}/', 'CustomersController@conversations')->name('customers.conversations');
-Route::get('/customer/ajax-search', ['uses' => 'CustomersController@ajaxSearch', 'laroute' => true])->name('customers.ajax_search');
+Route::get('/customers/{id}/edit', 'CustomersController@update')->name('customers.update');
+Route::post('/customers/{id}/edit', 'CustomersController@updateSave');
+Route::get('/customers/{id}/', 'CustomersController@conversations')->name('customers.conversations');
+Route::get('/customers/ajax-search', ['uses' => 'CustomersController@ajaxSearch', 'laroute' => true])->name('customers.ajax_search');
+Route::post('/customers/ajax', ['uses' => 'CustomersController@ajax', 'laroute' => true])->name('customers.ajax');
 
 // Translate
 Route::post('/translations/send', ['uses' => 'TranslateController@postSend', 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('translations.send');
@@ -98,6 +114,10 @@ Route::get('/system/tools', ['uses' => 'SystemController@tools', 'middleware' =>
 Route::post('/system/tools', ['uses' => 'SystemController@toolsExecute', 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('system.tools.action');
 Route::post('/system/ajax', ['uses' => 'SystemController@ajax', 'laroute' => true, 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('system.ajax');
 Route::post('/system/action', ['uses' => 'SystemController@action', 'middleware' => ['auth', 'roles'], 'roles' => ['admin']])->name('system.action');
+Route::get('/system/cron/{hash}', ['uses' => 'SystemController@cron'])->name('system.cron');
 
 // Open tracking
 Route::get('/thread/read/{conversation_id}/{thread_id}', 'PublicController@setThreadAsRead')->name('open_tracking.set_read');
+
+// Uploads
+Route::post('/uploads/upload', ['uses' => 'SecureController@upload', 'laroute' => true])->name('uploads.upload');

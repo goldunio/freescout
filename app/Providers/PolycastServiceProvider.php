@@ -8,6 +8,7 @@
 
 namespace App\Providers;
 
+use App\Conversation;
 use App\Notifications\BroadcastNotification;
 use Carbon\Carbon;
 use Illuminate\Broadcasting\BroadcastManager;
@@ -78,10 +79,17 @@ class PolycastServiceProvider extends ServiceProvider
                 $payload = $collection->map(function ($item, $key) use ($request) {
                     $created = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $item->created_at);
                     $requested = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $request->get('time'));
-                    $item->channels = json_decode($item->channels);
-                    $item->payload = json_decode($item->payload);
+                    $item->channels = json_decode($item->channels, false);
+                    $item->payload = json_decode($item->payload, false);
                     // Add extra data to the payload
+                    // This works only if payload has medius and thread_id
                     $item->data = BroadcastNotification::fetchPayloadData($item->payload);
+
+                    $event_class = '\\'.$item->event;
+                    if (method_exists($event_class, "processPayload")) {
+                        // If user is not allowed to access this event, data will be sent to empty array.
+                        $item->payload = $event_class::processPayload($item->payload);
+                    }
 
                     $item->delay = $requested->diffInSeconds($created);
                     $item->requested_at = $requested->toDateTimeString();
@@ -111,6 +119,13 @@ class PolycastServiceProvider extends ServiceProvider
         $viewing_conversation_id = null;
         if (!empty($request->data) && !empty($request->data['conversation_id'])) {
             $viewing_conversation_id = $request->data['conversation_id'];
+
+            if (!empty($request->data['conversation_view_focus'])) {
+                $conversation = Conversation::find($request->data['conversation_id']);
+                if ($conversation) {
+                    \Eventy::action('conversation.view.focus', $conversation);
+                }
+            }
         }
         if ($viewing_conversation_id) {
 

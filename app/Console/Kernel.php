@@ -46,13 +46,20 @@ class Kernel extends ConsoleKernel
         $schedule->command('freescout:update-folder-counters')
             ->hourly();
 
-        $schedule->command('freescout:module-check-licenses')
-            ->daily();
+        $app_key = config('app.key');
+        if ($app_key) {
+            $crc = crc32($app_key);
+            $schedule->command('freescout:module-check-licenses')
+                ->cron((int)($crc % 59).' '.(int)($crc % 23).' * * *');
+        }
 
         // Check if user finished viewing conversation.
         $schedule->command('freescout:check-conv-viewers')
             ->everyMinute()
             ->withoutOverlapping();
+
+        $schedule->command('freescout:clean-send-log')
+            ->monthly();
 
         // Logs monitoring.
         $alert_logs_period = config('app.alert_logs_period');
@@ -138,7 +145,11 @@ class Kernel extends ConsoleKernel
             }
         }
 
-        $schedule->command('queue:work', Config('app.queue_work_params'))
+        $queue_work_params = Config('app.queue_work_params');
+        // Add identifier to avoid conflicts with other FreeScout instances on the same server.
+        $queue_work_params['--queue'] .= ','.\Helper::getWorkerIdentifier();
+
+        $schedule->command('queue:work', $queue_work_params)
             ->everyMinute()
             ->withoutOverlapping()
             ->sendOutputTo(storage_path().'/logs/queue-jobs.log');
@@ -154,7 +165,7 @@ class Kernel extends ConsoleKernel
         $pids = [];
 
         try {
-            $processes = preg_split("/[\r\n]/", shell_exec("ps aux | grep 'queue:work'"));
+            $processes = preg_split("/[\r\n]/", shell_exec("ps aux | grep '".\Helper::getWorkerIdentifier()."'"));
             foreach ($processes as $process) {
                 preg_match("/^[\S]+\s+([\d]+)\s+/", $process, $m);
                 if (!preg_match("/(sh \-c|grep )/", $process) && !empty($m[1])) {
@@ -175,6 +186,13 @@ class Kernel extends ConsoleKernel
     protected function commands()
     {
         $this->load(__DIR__.'/Commands');
+
+        // Swiftmailer uses $_SERVER['SERVER_NAME'] in transport_deps.php
+        // to set the host for EHLO command, if it is empty it uses [127.0.0.1].
+        // G Suite sometimes rejects emails with EHLO [127.0.0.1].
+        if (empty($_SERVER['SERVER_NAME'])) {
+            $_SERVER['SERVER_NAME'] = parse_url(config('app.url'), PHP_URL_HOST);
+        }
 
         require base_path('routes/console.php');
     }

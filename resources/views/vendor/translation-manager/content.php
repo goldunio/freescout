@@ -4,21 +4,6 @@
     }
 </style>
 
-<?php
-    $selected_locale = request()->input('locale');
-    if ($selected_locale == 'en') {
-        $selected_locale = '';
-    }
-    if (!$selected_locale) {
-        foreach ($locales as $locale) {
-            if ($locale != 'en') {
-                $selected_locale = $locale;
-                break;
-            }
-        }
-    }
-?>
-
 <div class="container">
 
 <div class="container-fluid">
@@ -36,7 +21,7 @@
                 <p>Done searching for translations, found <strong class="counter">N</strong> items!</p>
             </div>
             <div class="alert alert-success success-publish" style="display:none;">
-                <p>Done publishing translations for group '<?php echo $group ?>'!</p>
+                <p>Done publishing translations for group '<?php echo htmlspecialchars($group ?? '') ?>'!</p>
             </div>
             <?php if(Session::has('successPublish')) : ?>
                 <div class="alert alert-info">
@@ -55,7 +40,7 @@
                     <form class="form-import" method="POST" action="<?php echo action('\Barryvdh\TranslationManager\Controller@postImport') ?>" data-remote="true" role="form">
                         <input type="hidden" name="_token" value="<?php echo csrf_token(); ?>">
                         <div class="form-group">
-                            <p>1. Import existing translations (non-published pending translations will be overwritten).</p>
+                            <p>1. Import translations from existing .json files (<strong>non-published pending translations will be overwritten or deleted</strong>).</p>
                             <div class="row">
                                 <div class="col-sm-12">
                                 <?php /*<div class="col-sm-3">*/ ?>
@@ -106,7 +91,7 @@
                 </form>
             <?php endif ?>
             <?php if(isset($group)) : ?>
-                <form class="form-inline form-publish" method="POST" action="<?php echo action('\Barryvdh\TranslationManager\Controller@postPublish', $group) ?>" data-remote="true" role="form" data-confirm="Are you sure you want to publish the translations group '<?php echo $group ?>? This will overwrite existing language files.">
+                <form class="form-inline form-publish" method="POST" action="<?php echo action('\Barryvdh\TranslationManager\Controller@postPublish', $group) ?>" data-remote="true" role="form" data-confirm="Are you sure you want to publish the translations group '<?php echo htmlspecialchars($group) ?>? This will overwrite existing language files.">
                     <input type="hidden" name="_token" value="<?php echo csrf_token(); ?>">
                     <?php /*<button type="submit" class="btn btn-primary" data-disable-with="Publishing…" >Publish translations</button>*/ ?>
                     <a href="<?= action('\Barryvdh\TranslationManager\Controller@getIndex') ?>" class="btn btn-primary">« Back</a>
@@ -132,7 +117,10 @@
                     </div>
                 </form>
                 <hr>*/ ?>
-                <h4>Total: <?= $numTranslations ?>, changed: <?= $numChanged ?></h4>
+                <h4>Total: <?= $numTranslations ?>, untranslated: <?= $numTodo ?>, changed: <?= $numChanged ?></h4>
+                <div class="text-help">
+                    Make sure NOT to translate placeholders like <strong>:person</strong> or <strong>:%tag_start%</strong>. Just keep them as is in the translation.
+                </div>
                 <table class="table">
                     <thead>
                     <tr>
@@ -234,7 +222,7 @@
                         Translations are not visible in the application until they are published.
                     </p>
                     <p class="block-help margin-bottom">
-                        If you want your translations to be added to the application release, you can send translations to the <?php echo \Config::get('app.name') ?> team.
+                        If you want your translations to be added to the application release, you can send translations to the <?php echo \Config::get('app.name') ?> Team.
                     </p>
                     <div class="alert alert-success success-publish-all" style="display:none;">
                         <p>Translations published!</p>
@@ -243,7 +231,14 @@
                         <p>Translations sent!</p>
                     </div>
                     <div class="alert alert-danger error-send-translations" style="display:none;">
-                        <p>Error occured sending translations. <a href="<?php echo route('system') ?>#php" target="_blank">Make sure</a> that you have PHP Zip extension enabled and check your <a href="<?php echo route('settings', ['section' => 'emails']) ?>" target="_blank">mail settings</a>.</p>
+                        <p id="error-send-general">Error occured sending translations. <a href="<?php echo route('system') ?>#php" target="_blank">Make sure</a> that you have PHP Zip extension enabled and check your <a href="<?php echo route('settings', ['section' => 'emails']) ?>" target="_blank">mail settings</a>.
+                        </p>
+                        <p id="error-send-custom">
+                        </p>
+                        <p>
+                            Alternatively you can manually archive <strong>/resources/lang</strong> folder and send  to <a href="mailto:<?php echo \Config::get('app.freescout_email') ?>"><?php echo \Config::get('app.freescout_email') ?></a>
+
+                        </p>
                     </div>
                     <div class="alert alert-success success-remove-unpublished" style="display:none;">
                         <p>Non-published translations removed!</p>
@@ -255,7 +250,7 @@
                     <form class="form-inline form-send-translations pull-left" method="POST" action="<?php echo action('TranslateController@postSend') ?>" data-remote="true" role="form" data-confirm="This will publish translations and send them to <?php echo \Config::get('app.name') ?> team by email.">
                         <input type="hidden" name="_token" value="<?php echo csrf_token(); ?>">
                         &nbsp;&nbsp;
-                        <button type="submit" class="btn btn-default" data-disable-with="Sending…" >Send Translations to <?php echo \Config::get('app.name') ?> Team</button>
+                        <button type="submit" class="btn btn-primary" data-disable-with="Sending…" >Publish and Send to <?php echo \Config::get('app.name') ?> Team</button>
                     </form>
                     <form class="form-inline form-download pull-left" method="POST" target="_blank" action="<?php echo action('TranslateController@postDownload') ?>" onsubmit="javascript:confirm('This will publish translations and download them as ZIP archive.');">
                         <input type="hidden" name="_token" value="<?php echo csrf_token(); ?>">

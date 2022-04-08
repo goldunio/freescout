@@ -1,15 +1,16 @@
 <!DOCTYPE html>
-<html lang="{{ app()->getLocale() }}">
+<html lang="{{ app()->getLocale() }}" @if (Helper::isLocaleRtl()) dir="rtl" @endif>
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-
+    <meta name="robots" content="noindex,nofollow">
+    
     <!-- CSRF Token -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
 
     <title>@if ($__env->yieldContent('title_full'))@yield('title_full') @elseif ($__env->yieldContent('title'))@yield('title') - {{ config('app.name', 'FreeScout') }} @else{{ config('app.name', 'FreeScout') }}@endif</title>
-    
+
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
     {{--<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">--}}
@@ -17,17 +18,32 @@
     <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#5bbad5">
     <meta name="msapplication-TileColor" content="#da532c">
     <meta name="theme-color" content="#ffffff">
-
+    @action('layout.head')
     {{-- Styles --}}
     {{-- Conversation page must open immediately, so we are loading scripts present on conversation page --}}
     {{-- style.css must be the last to able to redefine styles --}}
-    {!! Minify::stylesheet(\Eventy::filter('stylesheets', array('/css/fonts.css', '/css/bootstrap.css', '/css/select2/select2.min.css', '/js/featherlight/featherlight.min.css', '/js/featherlight/featherlight.gallery.min.css', '/css/magic-check.css', '/css/style.css'))) !!}
+    @php
+        try {
+            $styles= array('/css/fonts.css', '/css/bootstrap.css', '/css/select2/select2.min.css', '/js/featherlight/featherlight.min.css', '/js/featherlight/featherlight.gallery.min.css', '/css/magic-check.css', '/css/style.css' );
+            if (Helper::isLocaleRtl()) {
+                $styles[] = '/css/bootstrap-rtl.css';
+                $styles[] = '/css/style-rtl.css';
+            }
+    @endphp
+    {!! Minify::stylesheet(\Eventy::filter('stylesheets', $styles)) !!}
+    @php
+        } catch (\Exception $e) {
+            // Try...catch is needed to catch errors when activating a module and public symlink not created for module.
+            \Helper::logException($e);
+        }
+    @endphp
+
     @yield('stylesheets')
 </head>
-<body class="@if (!Auth::user()) user-is-guest @endif @if (Auth::user() && Auth::user()->isAdmin()) user-is-admin @endif @yield('body_class')" @yield('body_attrs') @if (Auth::user()) data-auth_user_id="{{ Auth::user()->id }}" @endif>
-    <div id="app">
+<body class="locale-{{ app()->getLocale() }} @if (Helper::isLocaleRtl()) rtl @endif @if (!Auth::user()) user-is-guest @endif @if (Auth::user() && Auth::user()->isAdmin()) user-is-admin @endif @yield('body_class')" @yield('body_attrs') @if (Auth::user()) data-auth_user_id="{{ Auth::user()->id }}" @endif>
+<div id="app">
 
-        @if (Auth::user())
+        @if (Auth::user() && empty(app('request')->x_embed) && empty($__env->yieldContent('guest_mode')))
 
             <nav class="navbar navbar-default navbar-static-top">
                 <div class="container">
@@ -42,62 +58,44 @@
                         </button>
 
                         <!-- Branding Image -->
-                        <a class="navbar-brand {{ \App\Misc\Helper::menuSelectedHtml('dashboard') }}" href="{{ url('/') }}" title="{{ __('Dashboard') }}">
-                            <img src="{{ asset('img/logo-brand.png') }}" />
-                            {{-- config('app.name', 'FreeScout') --}}
-                        </a>
+                        @if (\Helper::isInApp() && \Helper::isRoute('conversations.view'))
+                            <a class="navbar-brand" href="javascript: goBack(); void(0);" title="{{ __('Back') }}">
+                                <i class="glyphicon glyphicon-arrow-left"></i>
+                            </a>
+                        @else
+                            <a class="navbar-brand" href="{{ route('dashboard') }}" title="{{ __('Dashboard') }}">
+                                <img src="@filter('layout.header_logo', asset('img/logo-brand.svg'))" height="100%" alt="" />
+                                {{-- config('app.name', 'FreeScout') --}}
+                            </a>
+                        @endif
                     </div>
 
                     <div class="collapse navbar-collapse" id="app-navbar-collapse">
                         <!-- Left Side Of Navbar -->
                         <ul class="nav navbar-nav">
                             @php
-                                $cache_mailboxes = false;
-                                if (\Helper::isRoute('conversations.view')) {
-                                    $cache_mailboxes = true;
-                                }
-                                $mailboxes = Auth::user()->mailboxesCanView($cache_mailboxes);
+                                $mailboxes = Auth::user()->mailboxesCanView(true);
+                                $mailboxes = \Eventy::filter('menu.mailboxes', $mailboxes);
                             @endphp
                             @if (count($mailboxes) == 1)
-                                <li class="{{ \App\Misc\Helper::menuSelectedHtml('mailbox') }}"><a href="{{ route('mailboxes.view', ['id'=>$mailboxes[0]->id]) }}">{{ __('Mailbox') }}</a></li>
-                            @elseif (count($mailboxes) > 1) 
+                                <li class="{{ \App\Misc\Helper::menuSelectedHtml('mailbox') }}"><a href="{{ \Eventy::filter('mailbox.url', route('mailboxes.view', ['id'=>$mailboxes[0]->id]), $mailboxes[0]) }}">{{ __('Mailbox') }}</a></li>
+                            @elseif (count($mailboxes) > 1)
                                 <li class="dropdown {{ \App\Misc\Helper::menuSelectedHtml('mailbox') }}">
                                     <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre>
                                         {{ __('Mailbox') }} <span class="caret"></span>
                                     </a>
-                                    <ul class="dropdown-menu">
+                                    <ul class="dropdown-menu dm-scrollable">
                                         @foreach ($mailboxes as $mailbox_item)
-                                            <li @if ($mailbox_item->id == app('request')->id)class="active"@endif><a href="{{ route('mailboxes.view', ['id' => $mailbox_item->id]) }}">{{ $mailbox_item->name }}</a></li>
+                                            <li @if ($mailbox_item->id == app('request')->id)class="active"@endif><a href="{{ \Eventy::filter('mailbox.url', route('mailboxes.view', ['id' => $mailbox_item->id]), $mailbox_item) }}">{{ $mailbox_item->name }}</a></li>
                                         @endforeach
                                     </ul>
                                 </li>
                             @endif
-                            {{--@if (Auth::user()->isAdmin())
-                                <li class="dropdown">
-                                    <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre>
-                                        {{ __('Docs') }} <span class="caret"></span>
-                                    </a>
-
-                                    <ul class="dropdown-menu">
-                                        <li><a href="#">{{ __('New Site...') }} (todo)</a></li>
-                                    </ul>
-                                </li>
-                            
-                                <li class="dropdown">
-                                    <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre>
-                                        {{ __('Reports') }} <span class="caret"></span>
-                                    </a>
-
-                                    <ul class="dropdown-menu">
-                                        <li><a href="#">{{ __('Conversations') }} (todo)</a></li>
-                                        <li><a href="#">{{ __('Productivity') }} (todo)</a></li>
-                                        <li><a href="#">{{ __('Team') }} (todo)</a></li>
-                                        <li><a href="#">{{ __('Happiness') }} (todo)</a></li>
-                                        <li><a href="#">{{ __('Docs') }}  (todo)</a></li>
-                                    </ul>
-                                </li>
-                            @endif--}}
-                            @if (Auth::user()->isAdmin() || Auth::user()->can('viewMailboxMenu', Auth::user()))
+                            @if (Auth::user()->isAdmin()
+                                || Auth::user()->hasPermission(App\User::PERM_EDIT_USERS)
+                                || Auth::user()->can('viewMailboxMenu', Auth::user())
+                                || Eventy::filter('menu.manage.can_view', false)
+                            )
                                 <li class="dropdown {{ \App\Misc\Helper::menuSelectedHtml('manage') }}">
                                     <a href="#" class="dropdown-toggle" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre>
                                         {{ __('Manage') }} <span class="caret"></span>
@@ -105,32 +103,33 @@
 
                                     <ul class="dropdown-menu">
                                         @if (Auth::user()->isAdmin())
-                                            {{--<li><a href="#">{{ __('Apps') }} (todo)</a></li>--}}
                                             <li class="{{ \App\Misc\Helper::menuSelectedHtml('settings') }}"><a href="{{ route('settings') }}">{{ __('Settings') }}</a></li>
-                                            {{--<li><a href="#">{{ __('Docs') }} (todo)</a></li>--}}
                                         @endif
                                         @if (Auth::user()->can('viewMailboxMenu', Auth::user()))
                                             <li class="{{ \App\Misc\Helper::menuSelectedHtml('mailboxes') }}"><a href="{{ route('mailboxes') }}">{{ __('Mailboxes') }}</a></li>
                                         @endif
-                                        {{--<li class="{{ \App\Misc\Helper::menuSelectedHtml('tags') }}"><a href="#">{{ __('Tags') }} (todo)</a></li>--}}
-                                        @if (Auth::user()->isAdmin())
-                                            {{--<li><a href="#">{{ __('Teams') }} (todo)</a></li>--}}
+                                        @action('menu.manage.after_mailboxes')
+                                        @if (Auth::user()->isAdmin() || Auth::user()->hasPermission(App\User::PERM_EDIT_USERS))
                                             <li class="{{ \App\Misc\Helper::menuSelectedHtml('users') }}"><a href="{{ route('users') }}">{{ __('Users') }}</a></li>
+                                        @endif
+                                        @if (Auth::user()->isAdmin())
                                             <li class="{{ \App\Misc\Helper::menuSelectedHtml('modules') }}"><a href="{{ route('modules') }}">{{ __('Modules') }}</a></li>
                                             <li class=""><a href="{{ asset('translations') }}">{{ __('Translate') }}</a></li>
                                             <li class="{{ \App\Misc\Helper::menuSelectedHtml('logs') }}"><a href="{{ route('logs') }}">{{ __('Logs') }}</a></li>
                                             <li class="{{ \App\Misc\Helper::menuSelectedHtml('system') }}"><a href="{{ route('system') }}">{{ __('System') }}</a></li>
                                         @endif
+                                        @action('menu.manage.append')
                                     </ul>
                                 </li>
                             @endif
+                            @action('menu.append')
                         </ul>
 
                         <!-- Right Side Of Navbar -->
                         <ul class="nav navbar-nav navbar-right">
                             <!-- Authentication Links -->
                             @guest
-                                {{-- <li><a href="{{ route('login') }}">{{ __('Login') }}</a></li> --}}&nbsp;
+                                &nbsp;
                             @else
                                 <li class="dropdown web-notifications">
                                     @php
@@ -177,19 +176,20 @@
                                                 @endif
                                             </ul>
                                         </li>
-                                        
+
                                     </ul>
                                 </li>
-                                                                
+
 
                                 <li class="dropdown">
 
-                                    <a href="#" class="dropdown-toggle dropdown-toggle-icon dropdown-toggle-account" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre title="{{ __('Account') }}">
+                                    <a href="#" class="dropdown-toggle dropdown-toggle-icon dropdown-toggle-account" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre title="{{ __('Account') }}" aria-label="{{ __('Account') }}">
                                         <span class="photo-sm">@include('partials/person_photo', ['person' => Auth::user()])</span>&nbsp;<span class="nav-user">{{ Auth::user()->first_name }}</span> <span class="caret"></span>
                                     </a>
 
                                     <ul class="dropdown-menu">
                                         <li><a href="{{ route('users.profile', ['id'=>Auth::user()->id]) }}">{{ __('Your Profile') }}</a></li>
+                                        @action('menu_right.user.after_profile')
                                         <li class="divider"></li>
                                         <li>
                                             <a href="{{ route('logout') }}"
@@ -202,15 +202,19 @@
                                                 {{ csrf_field() }}
                                             </form>
                                         </li>
+                                        <li class="divider hidden in-app-switcher"></li>
+                                        <li>
+                                            <a href="javascript:switchHelpdeskUrl();void(0);" class="hidden in-app-switcher">{{ __('Switch Helpdesk URL') }}</a>
+                                        </li>
                                     </ul>
                                 </li>
 
                                 <li class="dropdown">
-                                    <a href="#" class="dropdown-toggle dropdown-toggle-icon" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre title="{{ __('Search') }}">
+                                    <a href="#" class="dropdown-toggle dropdown-toggle-icon" data-toggle="dropdown" role="button" aria-expanded="false" aria-haspopup="true" v-pre title="{{ __('Search') }}" aria-label="{{ __('Search') }}" id="search-dt">
                                         <i class="glyphicon glyphicon-search"></i>
                                     </a>
 
-                                    <ul class="dropdown-menu">
+                                    <ul class="dropdown-menu dropdown-with-icons">
                                         <li>
                                             <form class="form-inline form-nav-search" role="form" action="{{ route('conversations.search') }}" target="_blank">
                                                 <div class="input-group">
@@ -221,6 +225,11 @@
                                                 </div>
                                             </form>
                                         </li>
+                                        <li><a href="{{ route('conversations.search', ['f' => ['following' => 'yes']]) }}"><i class="glyphicon glyphicon-chevron-right"></i> {{ __("Conversations I'm following") }}</a></li>
+                                        <li><a href="{{ route('conversations.search', ['f' => ['assigned' => Auth::user()->id, 'status' => [App\Conversation::STATUS_ACTIVE, App\Conversation::STATUS_PENDING]]]) }}"><i class="glyphicon glyphicon-chevron-right"></i> {{ __('My open conversations') }}</a></li>
+                                        @if (in_array(Route::currentRouteName(), ['mailboxes.view', 'mailboxes.view.folder']))
+                                            <li><a href="{{ route('conversations.search', ['f' => ['mailbox' => app('request')->id]]) }}"><i class="glyphicon glyphicon-chevron-right"></i> {{ __("All from current mailbox") }}</a></li>
+                                        @endif
                                     </ul>
                                 </li>
                             @endguest
@@ -240,19 +249,27 @@
                 </div>
             </div>
         @else
-            <div class="content">
+            <div class="content @yield('content_class')">
                 @yield('content')
             </div>
         @endif
 
-        @if (!in_array(Route::currentRouteName(), array('mailboxes.view')))
+        @if (!in_array(Route::currentRouteName(), array('mailboxes.view'))
+            && empty(app('request')->x_embed) && empty($__env->yieldContent('no_footer')))
             <div class="footer">
-                &copy; {{ date('Y') }} <a href="{{ config('app.freescout_url') }}" target="blank">{{ \Config::get('app.name') }}</a> — {{ __('Free open source help desk &amp; shared mailbox' ) }}
-                    {{-- Show version to admin only --}}
-                    @if (Auth::user() && Auth::user()->isAdmin())
-                        <br/>
-                        <a href="{{ route('system') }}">{{ config('app.version') }}</a>
-                    @endif
+                @if (!\Eventy::filter('footer.text', ''))
+                    &copy; 2018-{{ date('Y') }} <a href="{{ config('app.freescout_url') }}" target="blank">{{ \Config::get('app.name') }}</a> — {{ __('Free open source help desk & shared mailbox') }}
+                @else
+                    {!! \Eventy::filter('footer.text', '') !!}
+                @endif
+                @if (!Auth::user())
+                    <a href="javascript:switchHelpdeskUrl();void(0);" class="hidden in-app-switcher"><br/>{{ __('Switch Helpdesk URL') }}</a>
+                @endif
+                {{-- Show version to admin only --}}
+                @if (Auth::user() && Auth::user()->isAdmin())
+                    <br/>
+                    <a href="{{ route('system') }}">{{ config('app.version') }}</a>
+                @endif
             </div>
         @endif
     </div>
@@ -268,11 +285,11 @@
     @php
         try {
     @endphp
-    {!! Minify::javascript(\Eventy::filter('javascripts', array('/js/jquery.js', '/js/bootstrap.js', '/js/lang.js', '/storage/js/vars.js', '/js/laroute.js', '/js/parsley/parsley.min.js', '/js/parsley/i18n/'.strtolower(Config::get('app.locale')).'.js', '/js/select2/select2.full.min.js', '/js/polycast/polycast.js', '/js/push/push.min.js', '/js/featherlight/featherlight.min.js', '/js/featherlight/featherlight.gallery.min.js', '/js/taphold.js', '/js/main.js'))) !!}
+    {!! Minify::javascript(\Eventy::filter('javascripts', array('/js/jquery.js', '/js/bootstrap.js', '/js/lang.js', '/storage/js/vars.js', '/js/laroute.js', '/js/parsley/parsley.min.js', '/js/parsley/i18n/'.strtolower(Config::get('app.locale')).'.js', '/js/select2/select2.full.min.js', '/js/polycast/polycast.js', '/js/push/push.min.js', '/js/featherlight/featherlight.min.js', '/js/featherlight/featherlight.gallery.min.js', '/js/taphold.js', '/js/jquery.titlealert.js', '/js/main.js'))) !!}
     @php
         } catch (\Exception $e) {
             // To prevent 500 errors on update.
-            // After some time this can be removed.
+            // Also catches errors when activating a module and public symlink not created for module.
             if (strstr($e->getMessage(), 'vars.js')) {
                 \Artisan::call('freescout:generate-vars');
             }
@@ -280,11 +297,16 @@
         }
     @endphp
     @yield('javascripts')
-    @if ($__env->yieldContent('javascript'))
-        <script type="text/javascript">
-            @yield('javascript')
-            @action('javascript')
-        </script>
-    @endif
+    <script type="text/javascript">
+        @if (\Helper::isInApp())
+            @if (Auth::user())
+                fs_in_app_data['token'] = '{{ Auth::user()->getAuthToken() }}';
+            @else
+                fs_in_app_data['token'] = '';
+            @endif
+        @endif
+        @yield('javascript')
+        @action('javascript')
+    </script>
 </body>
 </html>

@@ -6,6 +6,7 @@
 
 namespace App;
 
+use App\Email;
 use App\Mail\PasswordChanged;
 use App\Mail\UserInvite;
 use App\Notifications\WebsiteNotification;
@@ -52,7 +53,7 @@ class User extends Authenticatable
      * Statuses.
      */
     const STATUS_ACTIVE = 1;
-    const STATUS_DISABLED = 2; // todo
+    const STATUS_DISABLED = 2;
     const STATUS_DELETED = 3;
 
     /**
@@ -72,15 +73,19 @@ class User extends Authenticatable
      * Global user permissions.
      */
     const PERM_DELETE_CONVERSATIONS = 1;
-    const PERM_EDIT_CONVERSATIONS = 2;
-    const PERM_EDIT_SAVED_REPLIES = 3;
-    const PERM_EDIT_TAGS = 4;
+    const PERM_EDIT_CONVERSATIONS   = 2;
+    const PERM_EDIT_SAVED_REPLIES   = 3;
+    const PERM_EDIT_TAGS            = 4;
+    const PERM_EDIT_CUSTOM_FOLDERS  = 5;
+    const PERM_EDIT_USERS           = 10;
 
     public static $user_permissions = [
         self::PERM_DELETE_CONVERSATIONS,
         self::PERM_EDIT_CONVERSATIONS,
         self::PERM_EDIT_SAVED_REPLIES,
         self::PERM_EDIT_TAGS,
+        self::PERM_EDIT_CUSTOM_FOLDERS,
+        self::PERM_EDIT_USERS,
     ];
 
     const WEBSITE_NOTIFICATIONS_PAGE_SIZE = 25;
@@ -107,8 +112,12 @@ class User extends Authenticatable
      *
      * @var [type]
      */
-    protected $fillable = ['role', 'first_name', 'last_name', 'email', 'password', 'role', 'timezone', 'photo_url', 'type', 'emails', 'job_title', 'phone', 'time_format', 'enable_kb_shortcuts', 'locale'];
+    protected $fillable = ['role', 'status', 'first_name', 'last_name', 'email', 'password', 'role', 'timezone', 'photo_url', 'type', 'emails', 'job_title', 'phone', 'time_format', 'enable_kb_shortcuts', 'locale'];
 
+    protected $casts = [
+        'permissions' => 'array',
+    ];
+    
     /**
      * For array_unique function.
      *
@@ -124,7 +133,7 @@ class User extends Authenticatable
      */
     public function mailboxes()
     {
-        return $this->belongsToMany('App\Mailbox')->as('settings')->withPivot('after_send');
+        return $this->belongsToMany('App\Mailbox');
     }
 
     /**
@@ -133,6 +142,15 @@ class User extends Authenticatable
     public function mailboxes_cached()
     {
         return $this->mailboxes()->rememberForever();
+    }
+
+    public function mailboxesWithSettings()
+    {
+        return $this->belongsToMany('App\Mailbox')->as('settings')
+            ->withPivot('after_send')
+            ->withPivot('hide')
+            ->withPivot('mute')
+            ->withPivot('access');
     }
 
     /**
@@ -211,19 +229,71 @@ class User extends Authenticatable
     {
         if ($this->isAdmin()) {
             if ($cache) {
-                return Mailbox::rememberForever()->get();
+                $mailboxes = Mailbox::rememberForever()->get();
             } else {
-                return Mailbox::all();
+                $mailboxes = Mailbox::all();
             }
         } else {
             if ($cache) {
-                return $this->mailboxes_cached;
+                $mailboxes = $this->mailboxes_cached;
             } else {
-                return $this->mailboxes;
+                $mailboxes = $this->mailboxes;
             }
+        }
+
+        return $mailboxes->sortBy('name');
+    }
+
+    /**
+     * Get mailboxes to which user has access.
+     */
+    public function mailboxesCanViewWithSettings($cache = false)
+    {
+        $user = $this;
+
+        if ($this->isAdmin()) {
+            $query = Mailbox::select(['mailboxes.*', 'mailbox_user.hide', 'mailbox_user.mute', 'mailbox_user.access'])
+                        ->leftJoin('mailbox_user', function ($join) use ($user) {
+                            $join->on('mailbox_user.mailbox_id', '=', 'mailboxes.id');
+                            $join->where('mailbox_user.user_id', $user->id);
+                        });
+        } else {
+            $query = Mailbox::select(['mailboxes.*', 'mailbox_user.hide', 'mailbox_user.mute', 'mailbox_user.access'])
+                        ->join('mailbox_user', function ($join) use ($user) {
+                            $join->on('mailbox_user.mailbox_id', '=', 'mailboxes.id');
+                            $join->where('mailbox_user.user_id', $user->id);
+                        });
+        }
+        if ($cache) {
+            return $query->rememberForever()->get();
+        } else {
+            return $query->get();
         }
     }
 
+    public function mailboxesSettings($cache = true)
+    {
+        $user = $this;
+
+        $query = MailboxUser::where('user_id', $user->id);
+
+        if ($cache) {
+            return $query->rememberForever()->get();
+        } else {
+            return $query->get();
+        }
+    }
+
+    public function mailboxSettings($mailbox_id)
+    {
+        $settings = $this->mailboxesSettings()->where('mailbox_id', $mailbox_id)->first();
+
+        if (!$settings) {
+            return Mailbox::getDummySettings();
+        }
+
+        return $settings;
+    }
     /**
      * Get IDs of mailboxes to which user has access.
      */
@@ -241,6 +311,53 @@ class User extends Authenticatable
         $ids = $this->mailboxesIdsCanView();
         return in_array($mailbox_id, $ids);
     }
+
+    /**
+     * Check to see if the user can manage any mailboxes
+     */
+    public function hasManageMailboxAccess() {
+        if ($this->isAdmin()) {
+            return true;
+        } else {
+            //$mailboxes = $this->mailboxesCanViewWithSettings(true);
+            $mailboxes = $this->mailboxesSettings();
+            foreach ($mailboxes as $mailbox) {
+                if (!empty($mailbox->access) && !empty(json_decode($mailbox->access))) {
+                    return true;
+                }
+            };
+        }
+    }
+
+    /**
+     * Check to see if the user can manage a specific mailbox
+     */
+    public function canManageMailbox($mailbox_id)
+    {
+        if ($this->isAdmin()) {
+            return true;
+        } else {
+            //$mailbox = $this->mailboxesCanViewWithSettings(true)->where('id', $mailbox_id)->first();
+            $mailbox = $this->mailboxesSettings()->where('mailbox_id', $mailbox_id)->first();
+            if ($mailbox && !empty(json_decode($mailbox->access ?? ''))) {
+                return true;
+            }
+        }
+    }
+
+    public function hasManageMailboxPermission($mailbox_id, $perm) {
+        if ($this->isAdmin()) {
+            return true;
+        } else {
+            //$mailbox = $this->mailboxesCanViewWithSettings(true)->where('id', $mailbox_id)->first();
+            $mailbox = $this->mailboxesSettings()->where('mailbox_id', $mailbox_id)->first();
+            if ($mailbox && !empty($mailbox->access) && in_array($perm, json_decode($mailbox->access))) {
+                return true;
+            }
+        }
+    }
+
+
 
     /**
      * Generate random password for the user.
@@ -305,11 +422,11 @@ class User extends Authenticatable
                 continue;
             }
             foreach (Folder::$personal_types as $type) {
-                $folder = new Folder();
-                $folder->mailbox_id = $mailbox_id;
-                $folder->user_id = $this->id;
-                $folder->type = $type;
-                $folder->save();
+                Folder::create([
+                    'mailbox_id' => $mailbox_id,
+                    'user_id' => $this->id,
+                    'type' => $type,
+                ]);
             }
         }
     }
@@ -322,38 +439,53 @@ class User extends Authenticatable
      *
      * @return string
      */
-    public static function dateFormat($date, $format = 'M j, Y H:i', $user = null)
+    public static function dateFormat($date, $format = 'M j, Y H:i', $user = null, $modify_format = true, $use_user_timezone = true)
     {
         if (!$user) {
             $user = auth()->user();
         }
         if (is_string($date)) {
             // Convert string in to Carbon
-            $date = Carbon::parse($date);
+            try {
+                $date = Carbon::parse($date);
+            } catch (\Exception $e) {
+                $date = null;
+            }
         }
-        
-        if ($user) {
-            if ($user->time_format == self::TIME_FORMAT_12) {
-                $format = strtr($format, [
-                    'H'     => 'h',
-                    'G'     => 'g',
-                    ':i'    => ':ia',
-                    ':ia:s' => ':i:sa',
-                ]);
-            } else {
-                $format = strtr($format, [
-                    'h'     => 'H',
-                    'g'     => 'G',
-                    ':ia'   => ':i',
-                    ':i:sa' => ':i:s',
-                ]);
+
+        if (!$date) {
+            return '';
+        }
+
+        if (!$format) {
+            $format = 'M j, Y H:i';
+        }
+
+        if ($user && $user !== false) {
+            if ($modify_format) {
+                if ($user->time_format == self::TIME_FORMAT_12) {
+                    $format = strtr($format, [
+                        'H'     => 'h',
+                        'G'     => 'g',
+                        ':i'    => ':ia',
+                        ':ia:s' => ':i:sa',
+                    ]);
+                } else {
+                    $format = strtr($format, [
+                        'h'     => 'H',
+                        'g'     => 'G',
+                        ':ia'   => ':i',
+                        ':i:sa' => ':i:s',
+                    ]);
+                }
             }
             // todo: formatLocalized has to be used here and below,
             // but it returns $format value instead of formatted date
-            return $date->setTimezone($user->timezone)->format($format);
-        } else {
-            return $date->format($format);
+            if ($use_user_timezone) {
+                $date->setTimezone($user->timezone);
+            }
         }
+        return $date->format($format);
     }
 
     /**
@@ -390,7 +522,7 @@ class User extends Authenticatable
             }
         } else {
             $diff_text = $date->diffForHumans();
-            $diff_text = preg_replace('/minutes?/', 'min', $diff_text);
+            $diff_text = preg_replace('/minute[sn]?/', 'min', $diff_text);
 
             return $diff_text;
         }
@@ -425,12 +557,14 @@ class User extends Authenticatable
             self::PERM_EDIT_CONVERSATIONS   => __('Users are allowed to edit notes/replies'),
             self::PERM_EDIT_SAVED_REPLIES   => __('Users are allowed to edit/delete saved replies'),
             self::PERM_EDIT_TAGS            => __('Users are allowed to manage tags'),
+            self::PERM_EDIT_CUSTOM_FOLDERS  => __('Users are allowed to manage custom folders'),
+            self::PERM_EDIT_USERS           => __('Users are allowed to manage users'),
         ];
 
         if (!empty($user_permission_names[$user_permission])) {
             return $user_permission_names[$user_permission];
         } else {
-            return \Event::fire('filter.user_permission_name', [$user_permission]);
+            return \Eventy::filter('user_permissions.name', '', $user_permission);
         }
     }
 
@@ -635,16 +769,23 @@ class User extends Authenticatable
                 return '';
             }
         } else {
-            return '/img/default-avatar.png';
+            return asset('/img/default-avatar.png');
         }
     }
 
     /**
      * Resize and save user photo.
+     *
+     * $uploaded_file can be \File or string.
      */
-    public function savePhoto($uploaded_file)
+    public function savePhoto($uploaded_file, $mime_type = '')
     {
-        $resized_image = \App\Misc\Helper::resizeImage($uploaded_file->getRealPath(), $uploaded_file->getMimeType(), self::PHOTO_SIZE, self::PHOTO_SIZE);
+        $real_path = $uploaded_file;
+        if (!is_string($uploaded_file)) {
+            $real_path = $uploaded_file->getRealPath();
+            $mime_type = $uploaded_file->getMimeType();
+        }
+        $resized_image = \App\Misc\Helper::resizeImage($real_path, $mime_type, self::PHOTO_SIZE, self::PHOTO_SIZE);
 
         if (!$resized_image) {
             return false;
@@ -682,14 +823,44 @@ class User extends Authenticatable
         $this->photo_url = '';
     }
 
-    public function hasPermission($permission)
+    public function hasPermission($permission, $check_own_permissions = true)
     {
-        $permissions = Option::get('user_permissions');
-        if (!empty($permissions) && is_array($permissions) && in_array($permission, $permissions)) {
-            return true;
-        } else {
-            return false;
+        $has_permission = false;
+
+        $global_permissions = self::getGlobalUserPermissions();
+
+        if (!empty($global_permissions) && is_array($global_permissions) && in_array($permission, $global_permissions)) {
+            $has_permission = true;
         }
+
+        if ($check_own_permissions && !empty($this->permissions)) {
+            if (isset($this->permissions[$permission])) {
+                $has_permission = (bool)$this->permissions[$permission];
+            }
+        }
+
+        return $has_permission;
+    }
+
+    public static function getGlobalUserPermissions()
+    {
+        $permissions = [];
+        $permissions_json = config('app.user_permissions');
+
+        if ($permissions_json) {
+            $permissions_json = base64_decode($permissions_json);
+            try {
+                $permissions = json_decode($permissions_json, true);
+            } catch (\Exception $e) {
+                // Do nothing.
+            }
+        }
+
+        if (!is_array($permissions)) {
+            $permissions = [];
+        }
+
+        return $permissions;
     }
 
     /**
@@ -711,7 +882,7 @@ class User extends Authenticatable
         $user = new self();
 
         if (empty($data['email']) || empty($data['password'])) {
-            return false;
+            return null;
         }
 
         $user->fill($data);
@@ -722,10 +893,10 @@ class User extends Authenticatable
         try {
             $user->save();
         } catch (\Exception $e) {
-            return false;
+            return null;
         }
 
-        return true;
+        return $user;
     }
 
     /**
@@ -778,6 +949,16 @@ class User extends Authenticatable
         return self::where('status', '!=', self::STATUS_DELETED);
     }
 
+    public function isActive()
+    {
+        return $this->status == self::STATUS_ACTIVE;
+    }
+
+    public function isDisabled()
+    {
+        return $this->status == self::STATUS_DISABLED;
+    }
+
     public function isDeleted()
     {
         return $this->status == self::STATUS_DELETED;
@@ -786,10 +967,10 @@ class User extends Authenticatable
     /**
      * Get users which current user can see.
      */
-    public function whichUsersCanView($mailboxes = null)
+    public function whichUsersCanView($mailboxes = null, $sort = true)
     {
         if ($this->isAdmin()) {
-            return User::all();
+            $users = User::nonDeleted()->get();
         } else {
             // Get user mailboxes.
             if ($mailboxes == null) {
@@ -799,15 +980,20 @@ class User extends Authenticatable
             }
 
             // Get users
-            $users = User::select('users.*')
+            $users = User::nonDeleted()->select('users.*')
                 ->join('mailbox_user', function ($join) {
                     $join->on('mailbox_user.user_id', '=', 'users.id');
                 })
                 ->whereIn('mailbox_user.mailbox_id', $mailbox_ids)
+                ->groupBy('users.id')
                 ->get();
-
-            return $users;
         }
+
+        if ($sort) {
+            $users = User::sortUsers($users);
+        }
+
+        return $users;
     }
 
     /**
@@ -819,6 +1005,70 @@ class User extends Authenticatable
             return strtoupper(mb_substr($this->first_name, 0, 1)).strtoupper(mb_substr($this->last_name, 0, 1));
         } else {
             return strtoupper(mb_substr($this->first_name, 0, 1));
+        }
+    }
+
+    public function getAuthToken()
+    {
+        return md5($this->id.config('app.key'));
+    }
+
+    public static function findNonDeleted($id)
+    {
+        return User::nonDeleted()->where('id', $id)->first();
+    }
+
+    /**
+     * Sorting users alphabetically.
+     * It has to be done in PHP.
+     */
+    public static function sortUsers($users)
+    {
+        $users = $users->sortBy(function ($user, $i) {
+            return $user->getFullName();
+        }, SORT_STRING | SORT_FLAG_CASE);
+
+        return $users;
+    }
+
+    public static function getUserPermissionsList()
+    {
+        return \Eventy::filter('user_permissions.list', self::$user_permissions);
+    }
+
+    /**
+     * Check user main and alternate emails.
+     */
+    public function hasEmail($email)
+    {
+        $email = Email::sanitizeEmail($email);
+
+        if ($this->email == $email) {
+            return true;
+        }
+        $alt_emails = explode(',', $this->emails);
+        
+        foreach ($alt_emails as $alt_email) {
+            if (Email::sanitizeEmail($alt_email) == $email) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if there is a mailbox with specified email.
+     */
+    public static function mailboxEmailExists($email)
+    {
+        $email = Email::sanitizeEmail($email);
+        $mailbox = Mailbox::where('email', $email)->first();
+
+        if ($mailbox) {
+            return true;
+        } else {
+            return false;
         }
     }
 }

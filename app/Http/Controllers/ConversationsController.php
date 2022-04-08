@@ -14,6 +14,7 @@ use App\Events\UserCreatedConversationDraft;
 use App\Events\UserCreatedThreadDraft;
 use App\Events\UserReplied;
 use App\Folder;
+use App\Follower;
 use App\Mailbox;
 use App\MailboxUser;
 use App\SendLog;
@@ -43,11 +44,19 @@ class ConversationsController extends Controller
     public function view(Request $request, $id)
     {
         $conversation = Conversation::findOrFail($id);
-        $this->authorize('view', $conversation);
+        $this->authorize('viewCached', $conversation);
 
         $mailbox = $conversation->mailbox;
         $customer = $conversation->customer_cached;
         $user = auth()->user();
+
+        // To let other parts of the app easily access.
+        \Helper::setGlobalEntity('conversation', $conversation);
+        \Helper::setGlobalEntity('mailbox', $mailbox);
+
+        if ($user->isAdmin()) {
+            $mailbox->fetchUserSettings($user->id);
+        }
 
         // Mark notifications as read
         if (!empty($request->mark_as_read)) {
@@ -104,7 +113,8 @@ class ConversationsController extends Controller
             return redirect()->away($conversation->url($folder->id));
         }
 
-        $after_send = $conversation->mailbox->getUserSettings($user->id)->after_send;
+        //$after_send = $conversation->mailbox->getUserSettings($user->id)->after_send;
+        $after_send = $user->mailboxSettings($conversation->mailbox_id)->after_send;
 
         // Detect customers and emails to which user can reply
         $to_customers = [];
@@ -169,6 +179,8 @@ class ConversationsController extends Controller
             $prev_conversations = $mailbox->conversations()
                                     ->where('customer_id', $customer->id)
                                     ->where('id', '<>', $conversation->id)
+                                    ->where('status', '!=', Conversation::STATUS_SPAM)
+                                    ->where('state', Conversation::STATE_PUBLISHED)
                                     //->limit(self::PREV_CONVERSATIONS_LIMIT)
                                     ->orderBy('created_at', 'desc')
                                     ->paginate(self::PREV_CONVERSATIONS_LIMIT);
@@ -205,7 +217,7 @@ class ConversationsController extends Controller
         }
 
         // Notify other users that current user is viewing conversation.
-        // Eventually notification data will be saved in polycast_events table and processes 
+        // Eventually notification data will be saved in polycast_events table and processes
         // in JS in users browsers.
 
         // $notification = new \App\Notifications\UserViewingConversationNotification(
@@ -214,7 +226,7 @@ class ConversationsController extends Controller
 
         // This broadcasts to specific users.
         // \Notification::send($mailbox->usersHavingAccess(), $notification);
-        
+
         // Notification is sent to all via public channel: conview
         // If we send notification to each user, applications having thouthans of users
         // will be overloaded.
@@ -236,9 +248,13 @@ class ConversationsController extends Controller
             }
             // Show replying first.
             usort($viewers, function($a, $b) {
-                return $a['replying'] < $b['replying'];
+                return $b['replying'] <=> $a['replying'];
             });
         }
+
+        $is_following = $conversation->isUserFollowing($user->id);
+
+        \Eventy::action('conversation.view.start', $conversation);
 
         return view($template, [
             'conversation'       => $conversation,
@@ -252,12 +268,13 @@ class ConversationsController extends Controller
             'to_customers'       => $to_customers,
             'prev_conversations' => $prev_conversations,
             'cc'                 => $conversation->getCcArray($exclude_array),
-            'bcc'                => $conversation->getBccArray($exclude_array),
+            'bcc'                => [], //$conversation->getBccArray($exclude_array),
             // Data for creating a phone conversation.
             'name'               => $name,
             'phone'              => $phone,
             'to_email'           => $to_email,
             'viewers'            => $viewers,
+            'is_following'       => $is_following,
         ]);
     }
 
@@ -275,6 +292,7 @@ class ConversationsController extends Controller
 
         $folder = $mailbox->folders()->where('type', Folder::TYPE_DRAFTS)->first();
 
+        // todo: use $user->mailboxSettings()
         $after_send = $mailbox->getUserSettings(auth()->user()->id)->after_send;
 
         // Create conversation from thread
@@ -301,6 +319,13 @@ class ConversationsController extends Controller
             }
         }
 
+        $to = [];
+
+        $prefill_to = \App\Email::sanitizeEmail($request->get('to'));
+        if ($prefill_to) {
+            $to = [$prefill_to => $prefill_to];
+        }
+
         return view('conversations/create', [
             'conversation' => $conversation,
             'thread'       => $thread,
@@ -308,7 +333,7 @@ class ConversationsController extends Controller
             'folder'       => $folder,
             'folders'      => $mailbox->getAssesibleFolders(),
             'after_send'   => $after_send,
-            'to'           => [],
+            'to'           => $to,
         ]);
     }
 
@@ -373,26 +398,7 @@ class ConversationsController extends Controller
                         $response['redirect_url'] = $this->getRedirectUrl($request, $conversation, $user);
                     }
 
-                    $conversation->setUser($new_user_id);
-                    $conversation->save();
-
-                    // Create lineitem thread
-                    $thread = new Thread();
-                    $thread->conversation_id = $conversation->id;
-                    $thread->user_id = $conversation->user_id;
-                    $thread->type = Thread::TYPE_LINEITEM;
-                    $thread->state = Thread::STATE_PUBLISHED;
-                    $thread->status = Thread::STATUS_NOCHANGE;
-                    $thread->action_type = Thread::ACTION_TYPE_USER_CHANGED;
-                    $thread->source_via = Thread::PERSON_USER;
-                    // todo: this need to be changed for API
-                    $thread->source_type = Thread::SOURCE_TYPE_WEB;
-                    $thread->customer_id = $conversation->customer_id;
-                    $thread->created_by_user_id = $user->id;
-                    $thread->save();
-
-                    event(new ConversationUserChanged($conversation, $user));
-                    \Eventy::action('conversation.user_changed', $conversation, $user);
+                    $conversation->changeUser($new_user_id, $user);
 
                     $response['status'] = 'success';
 
@@ -451,28 +457,7 @@ class ConversationsController extends Controller
                         $response['redirect_url'] = $this->getRedirectUrl($request, $conversation, $user);
                     }
 
-                    $prev_status = $conversation->status;
-
-                    $conversation->setStatus($new_status, $user);
-                    $conversation->save();
-
-                    // Create lineitem thread
-                    $thread = new Thread();
-                    $thread->conversation_id = $conversation->id;
-                    $thread->user_id = $conversation->user_id;
-                    $thread->type = Thread::TYPE_LINEITEM;
-                    $thread->state = Thread::STATE_PUBLISHED;
-                    $thread->status = $conversation->status;
-                    $thread->action_type = Thread::ACTION_TYPE_STATUS_CHANGED;
-                    $thread->source_via = Thread::PERSON_USER;
-                    // todo: this need to be changed for API
-                    $thread->source_type = Thread::SOURCE_TYPE_WEB;
-                    $thread->customer_id = $conversation->customer_id;
-                    $thread->created_by_user_id = $user->id;
-                    $thread->save();
-
-                    event(new ConversationStatusChanged($conversation));
-                    \Eventy::action('conversation.status_changed_by_user', $conversation, $user, false, $prev_status);
+                    $conversation->changeStatus($new_status, $user);
 
                     $response['status'] = 'success';
                     // Flash
@@ -512,6 +497,7 @@ class ConversationsController extends Controller
                     $is_note = true;
                 }
 
+                // Conversation type.
                 $type = Conversation::TYPE_EMAIL;
                 if (!empty($request->type)) {
                     $type = (int)$request->type;
@@ -531,6 +517,11 @@ class ConversationsController extends Controller
                 $is_forward = false;
                 if (!empty($request->subtype) && (int)$request->subtype == Thread::SUBTYPE_FORWARD) {
                     $is_forward = true;
+                }
+
+                $is_multiple = false;
+                if (!empty($request->multiple_conversations)) {
+                    $is_multiple = true;
                 }
 
                 // If reply is being created from draft, there is already thread created
@@ -625,9 +616,6 @@ class ConversationsController extends Controller
                         $conversation->type = $type;
                         $conversation->subject = $request->subject;
                         $conversation->setPreview($request->body);
-                        if ($attachments_info['has_attachments']) {
-                            $conversation->has_attachments = true;
-                        }
                         $conversation->mailbox_id = $request->mailbox_id;
                         $conversation->created_by_user_id = auth()->user()->id;
                         $conversation->source_via = Conversation::PERSON_USER;
@@ -637,6 +625,18 @@ class ConversationsController extends Controller
                         if ((int) $request->status != (int) $conversation->status) {
                             $status_changed = true;
                         }
+                        if (!empty($request->subject)) {
+                            $conversation->subject = $request->subject;
+                        }
+                        // When switching from regular message to phone and message sent
+                        // without saving a draft type need to be saved here.
+                        if ($conversation->type == Conversation::TYPE_EMAIL && $type == Conversation::TYPE_PHONE) {
+                            $conversation->type = $type;
+                        }
+                    }
+
+                    if ($attachments_info['has_attachments']) {
+                        $conversation->has_attachments = true;
                     }
 
                     // Customer can be empty in existing conversation if this is a draft.
@@ -649,6 +649,9 @@ class ConversationsController extends Controller
 
                         $customer_email = $phone_customer_data['customer_email'];
                         $customer = $phone_customer_data['customer'];
+                        if (!$conversation->customer_id) {
+                            $conversation->customer_id = $customer->id;
+                        }
                     } else {
                         // Email.
                         if (!empty($to_array)) {
@@ -668,9 +671,15 @@ class ConversationsController extends Controller
                     $prev_status = $conversation->status;
 
                     $conversation->status = $request->status;
+                    if ($prev_status != $conversation->status && $conversation->status == Conversation::STATUS_CLOSED) {
+                        $conversation->closed_by_user_id = $user->id;
+                        $conversation->closed_at = date('Y-m-d H:i:s');
+                    }
+
                     // We need to set state, as it may have been a draft
                     $conversation->state = Conversation::STATE_PUBLISHED;
                     // Set assignee
+                    $prev_user_id = $conversation->user_id;
                     if ((int) $request->user_id != -1) {
                         // Check if user has access to the current mailbox
                         if ((int) $conversation->user_id != (int) $request->user_id && $mailbox->userHasAccess($request->user_id)) {
@@ -686,7 +695,7 @@ class ConversationsController extends Controller
                     // List of emails.
                     $to_list = [];
                     if ($is_forward) {
-                        $to = $request->to_email;
+                        $to = $request->to_email[0];
                     } else {
                         if (!empty($request->to)) {
                             // When creating a new conversation, to is a list of emails.
@@ -702,11 +711,19 @@ class ConversationsController extends Controller
 
                     if (!$is_note && !$is_forward) {
                         // Save extra recipients to CC
-                        $conversation->setCc(array_merge(Conversation::sanitizeEmails($request->cc), [$to]));
+                        if ($is_create && !$is_multiple && count($to_array) > 1) {
+                            $conversation->setCc(array_merge(Conversation::sanitizeEmails($request->cc), $to_array));
+                        } else {
+                            $conversation->setCc(array_merge(Conversation::sanitizeEmails($request->cc), [$to]));
+                        }
                         $conversation->setBcc($request->bcc);
                         $conversation->last_reply_at = $now;
                         $conversation->last_reply_from = Conversation::PERSON_USER;
                         $conversation->user_updated_at = $now;
+                    }
+                    if ($conversation->isPhone() && $is_note) {
+                        $conversation->last_reply_at = $now;
+                        $conversation->last_reply_from = Conversation::PERSON_USER;
                     }
                     $conversation->updateFolder();
                     if ($from_draft) {
@@ -723,14 +740,16 @@ class ConversationsController extends Controller
                     }
 
                     // Fire events
+                    \Eventy::action('conversation.send_reply_save', $conversation, $request);
+                    
                     if (!$new) {
                         if ($status_changed) {
                             event(new ConversationStatusChanged($conversation));
-                            \Eventy::action('conversation.status_changed_by_user', $conversation, $user, true, $prev_status);
+                            \Eventy::action('conversation.status_changed', $conversation, $user, $changed_on_reply = true, $prev_status);
                         }
                         if ($user_changed) {
                             event(new ConversationUserChanged($conversation, $user));
-                            \Eventy::action('conversation.user_changed', $conversation, $user);
+                            \Eventy::action('conversation.user_changed', $conversation, $user, $prev_user_id);
                         }
                     }
 
@@ -764,7 +783,11 @@ class ConversationsController extends Controller
                     $thread->edited_by_user_id = null;
                     $thread->edited_at = null;
                     $thread->body = $request->body;
-                    $thread->setTo($to);
+                    if ($is_create && !$is_multiple && count($to_array) > 1) {
+                        $thread->setTo($to_array);
+                    } else {
+                        $thread->setTo($to);
+                    }
                     // We save CC and BCC as is and filter emails when sending replies
                     $thread->setCc($request->cc);
                     $thread->setBcc($request->bcc);
@@ -774,51 +797,83 @@ class ConversationsController extends Controller
                     if (!empty($request->saved_reply_id)) {
                         $thread->saved_reply_id = $request->saved_reply_id;
                     }
-                    if ($is_forward) {
-                        // Create forwarded conversation.
-                        $forwarded_conversation = $conversation->replicate();
-                        $forwarded_conversation->type = Conversation::TYPE_EMAIL;
-                        $forwarded_conversation->setPreview($thread->body);
-                        $forwarded_conversation->created_by_user_id = auth()->user()->id;
-                        $forwarded_conversation->source_via = Conversation::PERSON_USER;
-                        $forwarded_conversation->source_type = Conversation::SOURCE_TYPE_WEB;
-                        $forwarded_conversation->threads_count = 0; // Counter will be incremented in ThreadObserver.
-                        $forwarded_customer = Customer::create($customer_email);
-                        $forwarded_conversation->customer_id = $forwarded_customer->id;
-                        $forwarded_conversation->customer_email = $customer_email;
-                        $forwarded_conversation->subject = 'Fwd: '.$forwarded_conversation->subject;
-                        $forwarded_conversation->setCc(array_merge(Conversation::sanitizeEmails($request->cc), [$to]));
-                        $forwarded_conversation->setBcc($request->bcc);
-                        $forwarded_conversation->last_reply_at = $now;
-                        $forwarded_conversation->last_reply_from = Conversation::PERSON_USER;
-                        $forwarded_conversation->user_updated_at = $now;
-                        if ($attachments_info['has_attachments']) {
-                            $forwarded_conversation->has_attachments = true;
-                        }
-                        $forwarded_conversation->updateFolder();
-                        $forwarded_conversation->save();
+                    
+                    $forwarded_conversations = [];
+                    $forwarded_threads = [];
 
-                        $forwarded_thread = $thread->replicate();
+                    if ($is_forward) {
+                        // Create forwarded conversations.
+                        foreach ($to_array as $recipient_email) {
+                            $forwarded_conversation = $conversation->replicate();
+                            $forwarded_conversation->type = Conversation::TYPE_EMAIL;
+                            $forwarded_conversation->setPreview($thread->body);
+                            $forwarded_conversation->created_by_user_id = auth()->user()->id;
+                            $forwarded_conversation->source_via = Conversation::PERSON_USER;
+                            $forwarded_conversation->source_type = Conversation::SOURCE_TYPE_WEB;
+                            $forwarded_conversation->threads_count = 0; // Counter will be incremented in ThreadObserver.
+                            $forwarded_customer = Customer::create($recipient_email);
+                            $forwarded_conversation->customer_id = $forwarded_customer->id;
+                            // Reload customer object, otherwise it stores previous customer.
+                            $forwarded_conversation->load('customer');
+                            $forwarded_conversation->customer_email = $recipient_email;
+                            $forwarded_conversation->subject = 'Fwd: '.$forwarded_conversation->subject;
+                            //$forwarded_conversation->setCc(array_merge(Conversation::sanitizeEmails($request->cc), [$to]));
+                            $forwarded_conversation->setCc(Conversation::sanitizeEmails($request->cc));
+                            $forwarded_conversation->setBcc($request->bcc);
+                            $forwarded_conversation->last_reply_at = $now;
+                            $forwarded_conversation->last_reply_from = Conversation::PERSON_USER;
+                            $forwarded_conversation->user_updated_at = $now;
+                            if ($attachments_info['has_attachments']) {
+                                $forwarded_conversation->has_attachments = true;
+                            }
+                            $forwarded_conversation->updateFolder();
+                            $forwarded_conversation->save();
+
+                            $forwarded_thread = $thread->replicate();
+
+                            $forwarded_conversations[] = $forwarded_conversation;
+                            $forwarded_threads[] = $forwarded_thread;
+                        }
 
                         // Set forwarding meta data.
+                        // todo: store array of numbers and IDs.
                         $thread->subtype = Thread::SUBTYPE_FORWARD;
                         $thread->setMeta('forward_child_conversation_number', $forwarded_conversation->number);
                         $thread->setMeta('forward_child_conversation_id', $forwarded_conversation->id);
                     }
+
+                    // Conversation history.
+                    if (!empty($request->conv_history)) {
+                        if ($request->conv_history != 'global') {
+                            if ($is_forward && !empty($forwarded_threads)) {
+                                foreach ($forwarded_threads as $forwarded_thread) {
+                                    $forwarded_thread->setMeta(Thread::META_CONVERSATION_HISTORY, $request->conv_history);
+                                }
+                            } else {
+                                $thread->setMeta(Thread::META_CONVERSATION_HISTORY, $request->conv_history);
+                            }
+                        }
+                    }
+
+                    \Eventy::action('thread.before_save_from_request', $thread, $request);
                     $thread->save();
 
                     // Save forwarded thread.
                     if ($is_forward) {
-                        $forwarded_thread->conversation_id = $forwarded_conversation->id;
-                        $forwarded_thread->type = Thread::TYPE_MESSAGE;
-                        $forwarded_thread->subtype = null;
-                        if ($attachments_info['has_attachments']) {
-                            $forwarded_thread->has_attachments = true;
+                        foreach ($forwarded_conversations as $i => $forwarded_conversation) {
+                            $forwarded_thread = $forwarded_threads[$i];
+
+                            $forwarded_thread->conversation_id = $forwarded_conversation->id;
+                            $forwarded_thread->type = Thread::TYPE_MESSAGE;
+                            $forwarded_thread->subtype = null;
+                            if ($attachments_info['has_attachments']) {
+                                $forwarded_thread->has_attachments = true;
+                            }
+                            $forwarded_thread->setMeta('forward_parent_conversation_number', $conversation->number);
+                            $forwarded_thread->setMeta('forward_parent_conversation_id', $conversation->id);
+                            $forwarded_thread->setMeta('forward_parent_thread_id', $thread->id);
+                            $forwarded_thread->save();
                         }
-                        $forwarded_thread->setMeta('forward_parent_conversation_number', $conversation->number);
-                        $forwarded_thread->setMeta('forward_parent_conversation_id', $conversation->id);
-                        $forwarded_thread->setMeta('forward_parent_thread_id', $thread->id);
-                        $forwarded_thread->save();
                     }
 
                     // If thread has been created from draft, remove the draft
@@ -842,11 +897,22 @@ class ConversationsController extends Controller
                     // Set thread_id for uploaded attachments
                     if ($attachments_info['attachments']) {
                         if ($is_forward) {
-                            $attachment_thread_id = $forwarded_thread->id;
+                            // Copy attachments for each thread.
+                            if (count($forwarded_threads) > 1) {
+                                $attachments = Attachment::whereIn('id', $attachments_info['attachments'])->get();
+                            }
+                            foreach ($forwarded_threads as $i => $forwarded_thread) {
+                                if ($i == 0) {
+                                    Attachment::whereIn('id', $attachments_info['attachments'])->update(['thread_id' => $forwarded_thread->id]);
+                                } else {
+                                    foreach ($attachments as $attachment) {
+                                        $attachment->duplicate($forwarded_thread->id);
+                                    }
+                                }
+                            }
                         } else {
-                            $attachment_thread_id = $thread->id;
+                            Attachment::whereIn('id', $attachments_info['attachments'])->update(['thread_id' => $thread->id]);
                         }
-                        Attachment::whereIn('id', $attachments_info['attachments'])->update(['thread_id' => $attachment_thread_id]);
                     }
 
                     // When user creates a new conversation it may be saved as draft first.
@@ -860,11 +926,15 @@ class ConversationsController extends Controller
                         // Forward.
                         // Notifications to users not sent.
                         event(new UserAddedNote($conversation, $thread));
-                        // To send email with forwarded conversation.
-                        event(new UserReplied($forwarded_conversation, $forwarded_thread));
-                        \Eventy::action('conversation.user_forwarded_can_undo', $conversation, $thread, $forwarded_conversation, $forwarded_thread);
-                        // After Conversation::UNDO_TIMOUT period trigger final event.
-                        \Helper::backgroundAction('conversation.user_forwarded', [$conversation, $thread, $forwarded_conversation, $forwarded_thread], now()->addSeconds(Conversation::UNDO_TIMOUT));
+                        foreach ($forwarded_conversations as $i => $forwarded_conversation) {
+                            $forwarded_thread = $forwarded_threads[$i];
+
+                            // To send email with forwarded conversation.
+                            event(new UserReplied($forwarded_conversation, $forwarded_thread));
+                            \Eventy::action('conversation.user_forwarded_can_undo', $conversation, $thread, $forwarded_conversation, $forwarded_thread);
+                            // After Conversation::UNDO_TIMOUT period trigger final event.
+                            \Helper::backgroundAction('conversation.user_forwarded', [$conversation, $thread, $forwarded_conversation, $forwarded_thread], now()->addSeconds(Conversation::UNDO_TIMOUT));
+                        }
                     } elseif ($is_note) {
                         // Note.
                         event(new UserAddedNote($conversation, $thread));
@@ -877,8 +947,8 @@ class ConversationsController extends Controller
                         \Helper::backgroundAction('conversation.user_replied', [$conversation, $thread], now()->addSeconds(Conversation::UNDO_TIMOUT));
                     }
 
-                    // Send new conversation to multiple customers.
-                    if ($is_create && count($to_array) > 1) {
+                    // Send new conversation separately to each customer.
+                    if ($is_create && count($to_array) > 1 && $is_multiple) {
                         $prev_customers_ids = [];
                         foreach ($to_array as $i => $customer_email) {
                             // Skip first email, as conversation has already been created for it.
@@ -903,14 +973,27 @@ class ConversationsController extends Controller
                             $thread_copy = $thread->replicate();
 
                             // Save conversation.
+                            $conversation_copy->threads_count = 0;
                             $conversation_copy->customer_id = $customer_tmp->id;
+                            // Reload customer, otherwise all recipients will have the same name.
+                            $conversation_copy->load('customer');
                             $conversation_copy->customer_email = $customer_email;
+                            $conversation_copy->has_attachments = $conversation->has_attachments;
                             $conversation_copy->push();
 
                             $thread_copy->conversation_id = $conversation_copy->id;
                             $thread_copy->customer_id = $customer_tmp->id;
+                            $thread_copy->has_attachments = $conversation->has_attachments;
                             $thread_copy->setTo($customer_email);
                             $thread_copy->push();
+
+                            // Copy attachments.
+                            if (!empty($attachments_info['attachments'])) {
+                                $attachments = Attachment::whereIn('id', $attachments_info['attachments'])->get();
+                                foreach ($attachments as $attachment) {
+                                    $attachment->duplicate($thread_copy->id);
+                                }
+                            }
 
                             // Events.
                             // todo: allow to undo all emails
@@ -926,35 +1009,33 @@ class ConversationsController extends Controller
                     if (!empty($request->after_send) && $request->after_send == MailboxUser::AFTER_SEND_STAY) {
                         $show_view_link = false;
                     }
-                   
+
+                    $flash_vars = ['%tag_start%' => '<strong>', '%tag_end%' => '</strong>', '%view_start%' => '&nbsp;<a href="'.$conversation->url().'">', '%a_end%' => '</a>&nbsp;', '%undo_start%' => '&nbsp;<a href="'.route('conversations.undo', ['thread_id' => $thread->id]).'" class="text-danger">'];
+
                     if ($is_phone) {
                         $flash_type = 'warning';
                         if ($show_view_link) {
-                            $flash_text = ':%tag_start%Conversation created:%tag_end% :%view_start%View:%a_end% or :%undo_start%Undo:%a_end%';
+                            $flash_text = __(':%tag_start%Conversation created:%tag_end% :%view_start%View:%a_end% or :%undo_start%Undo:%a_end%', $flash_vars);
                         } else {
                             $flash_text = '<strong>'.__('Conversation created').'</strong>';
                         }
                     } elseif ($is_note) {
                         $flash_type = 'warning';
                         if ($show_view_link) {
-                            $flash_text = ':%tag_start%Note added:%tag_end% :%view_start%View:%a_end%';
+                            $flash_text = __(':%tag_start%Note added:%tag_end% :%view_start%View:%a_end%', $flash_vars);
                         } else {
                             $flash_text = '<strong>'.__('Note added').'</strong>';
                         }
                     } else {
                         $flash_type = 'success';
                         if ($show_view_link) {
-                            $flash_text = ':%tag_start%Email Sent:%tag_end% :%view_start%View:%a_end% or :%undo_start%Undo:%a_end%';
+                            $flash_text = __(':%tag_start%Email Sent:%tag_end% :%view_start%View:%a_end% or :%undo_start%Undo:%a_end%', $flash_vars);
                         } else {
-                            $flash_text = ':%tag_start%Email Sent:%tag_end% :%undo_start%Undo:%a_end%';
+                            $flash_text = __(':%tag_start%Email Sent:%tag_end% :%undo_start%Undo:%a_end%', $flash_vars);
                         }
                     }
-                    $flash_message = __(
-                        $flash_text,
-                        ['%tag_start%' => '<strong>', '%tag_end%' => '</strong>', '%view_start%' => '&nbsp;<a href="'.$conversation->url().'">', '%a_end%' => '</a>&nbsp;', '%undo_start%' => '&nbsp;<a href="'.route('conversations.undo', ['thread_id' => $thread->id]).'" class="text-danger">']
-                    );
 
-                    \Session::flash('flash_'.$flash_type.'_floating', $flash_message);
+                    \Session::flash('flash_'.$flash_type.'_floating', $flash_text);
                 }
                 break;
 
@@ -1006,8 +1087,8 @@ class ConversationsController extends Controller
                     // Check if the last thread has same content as the new one.
                     $last_thread = $conversation->getLastThread([Thread::TYPE_MESSAGE, Thread::TYPE_NOTE]);
 
-                    if ($last_thread 
-                        && $last_thread->created_by_user_id == $user->id 
+                    if ($last_thread
+                        && $last_thread->created_by_user_id == $user->id
                         && $last_thread->body == $request->body
                     ) {
                         //\Log::error("You've already sent this message just recently.");
@@ -1200,6 +1281,15 @@ class ConversationsController extends Controller
                 if (!$thread) {
                     // Discarding nont saved yet draft
                     $response['status'] = 'success';
+
+                    // Discarding a new conversation being created from thread
+                    if (!empty($request->from_thread_id)) {
+                        $original_thread = Thread::find($request->from_thread_id);
+                        if ($original_thread && $original_thread->conversation_id) {
+                            // Open original conversation
+                            $response['redirect_url'] = route('conversations.view', ['id' => $original_thread->conversation_id]);
+                        }
+                    }
                     break;
                     //$response['msg'] = __('Thread not found');
                 }
@@ -1265,8 +1355,8 @@ class ConversationsController extends Controller
                     $response['data'] = [
                         'thread_id'   => $thread->id,
                         'to'          => $thread->getToFirst(),
-                        'cc'          => $thread->getCcString(),
-                        'bcc'         => $thread->getBccString(),
+                        'cc'          => $thread->getCcArray(),
+                        'bcc'         => $thread->getBccArray(),
                         'body'        => $thread->body,
                         'is_forward'  => (int)$thread->isForward(),
                         'attachments' => $attachments,
@@ -1275,7 +1365,8 @@ class ConversationsController extends Controller
                 }
                 break;
 
-            // Load attachments from all threads in conversation.
+            // Load attachments from all threads in conversation 
+            // when forwarding or creating a new conversation.
             case 'load_attachments':
                 $conversation = Conversation::find($request->conversation_id);
                 if (!$conversation) {
@@ -1294,11 +1385,17 @@ class ConversationsController extends Controller
                         foreach ($conversation->threads as $thread) {
                             if ($thread->has_attachments) {
                                 foreach ($thread->attachments as $attachment) {
+                                    if ($request->is_forwarding == 'true') {
+                                        $attachment_copy = $attachment->duplicate($thread->id);
+                                    } else {
+                                        $attachment_copy = $attachment;
+                                    }
+
                                     $attachments[] = [
-                                        'id'   => $attachment->id,
-                                        'name' => $attachment->file_name,
-                                        'size' => $attachment->size,
-                                        'url'  => $attachment->url(),
+                                        'id'   => $attachment_copy->id,
+                                        'name' => $attachment_copy->file_name,
+                                        'size' => $attachment_copy->size,
+                                        'url'  => $attachment_copy->url(),
                                     ];
                                 }
                             }
@@ -1321,14 +1418,14 @@ class ConversationsController extends Controller
                     $response['msg'] .= __('Action not authorized');
                 }
                 if (!$response['msg']) {
-                    $mailbox_user = $user->mailboxes()->where('mailbox_id', $request->mailbox_id)->first();
+                    $mailbox_user = $user->mailboxesWithSettings()->where('mailbox_id', $request->mailbox_id)->first();
                     if (!$mailbox_user) {
                         // Admin may not be connected to the mailbox yet
                         $user->mailboxes()->attach($request->mailbox_id);
                         // $mailbox_user = new MailboxUser();
                         // $mailbox_user->mailbox_id = $mailbox->id;
                         // $mailbox_user->user_id = $user->id;
-                        $mailbox_user = $user->mailboxes()->where('mailbox_id', $request->mailbox_id)->first();
+                        $mailbox_user = $user->mailboxesWithSettings()->where('mailbox_id', $request->mailbox_id)->first();
                     }
                     $mailbox_user->settings->after_send = $request->value;
                     $mailbox_user->settings->save();
@@ -1379,11 +1476,11 @@ class ConversationsController extends Controller
 
                 if (!$response['msg']) {
                     if ($request->sub_action == 'star') {
-                        $conversation->addToFolder(Folder::TYPE_STARRED);
+                        $conversation->addToFolder(Folder::TYPE_STARRED, $user->id);
                     } else {
-                        $conversation->removeFromFolder(Folder::TYPE_STARRED);
+                        $conversation->removeFromFolder(Folder::TYPE_STARRED, $user->id);
                     }
-                    Conversation::clearStarredByUserCache($user->id);
+                    Conversation::clearStarredByUserCache($user->id, $conversation->mailbox_id);
                     $conversation->mailbox->updateFoldersCounters(Folder::TYPE_STARRED);
                     $response['status'] = 'success';
                 }
@@ -1400,31 +1497,34 @@ class ConversationsController extends Controller
 
                 if (!$response['msg']) {
                     $folder_id = $conversation->getCurrentFolder();
-                    $conversation->state = Conversation::STATE_DELETED;
-                    $conversation->user_updated_at = date('Y-m-d H:i:s');
-                    $conversation->updateFolder();
-                    $conversation->save();
 
-                    // Create lineitem thread
-                    $thread = new Thread();
-                    $thread->conversation_id = $conversation->id;
-                    $thread->user_id = $conversation->user_id;
-                    $thread->type = Thread::TYPE_LINEITEM;
-                    $thread->state = Thread::STATE_PUBLISHED;
-                    $thread->status = Thread::STATUS_NOCHANGE;
-                    $thread->action_type = Thread::ACTION_TYPE_DELETED_TICKET;
-                    $thread->source_via = Thread::PERSON_USER;
-                    // todo: this need to be changed for API
-                    $thread->source_type = Thread::SOURCE_TYPE_WEB;
-                    $thread->customer_id = $conversation->customer_id;
-                    $thread->created_by_user_id = $user->id;
-                    $thread->save();
+                    $conversation->deleteToFolder($user);
 
-                    // Remove conversation from drafts folder.
-                    $conversation->removeFromFolder(Folder::TYPE_DRAFTS);
+                    $response['redirect_url'] = route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $folder_id]);
+
+                    $response['status'] = 'success';
+
+                    \Session::flash('flash_success_floating', __('Conversation deleted'));
+                }
+                break;
+
+            // Delete conversation forever
+            case 'delete_conversation_forever':
+                $conversation = Conversation::find($request->conversation_id);
+                if (!$conversation) {
+                    $response['msg'] = __('Conversation not found');
+                } elseif (!$user->can('delete', $conversation)) {
+                    $response['msg'] = __('Not enough permissions');
+                }
+
+                if (!$response['msg']) {
+                    $folder_id = $conversation->getCurrentFolder();
+                    $mailbox = $conversation->mailbox;
+
+                    $conversation->deleteForever();
 
                     // Recalculate only old and new folders
-                    $conversation->mailbox->updateFoldersCounters();
+                    $mailbox->updateFoldersCounters();
 
                     $response['redirect_url'] = route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $folder_id]);
 
@@ -1512,6 +1612,13 @@ class ConversationsController extends Controller
                     $response['body'] = $thread->getCleanBody();
 
                     if (strip_tags($response['body'])) {
+
+                        // Update the preview for the conversation if needed.
+                        $last_thread = $thread->conversation->getLastThread([Thread::TYPE_CUSTOMER, Thread::TYPE_MESSAGE, Thread::TYPE_NOTE]);
+                        if ($last_thread && $last_thread->id == $thread->id) {
+                            $thread->conversation->setPreview($thread->body);
+                            $thread->conversation->save();
+                        }
                         $thread->save();
 
                         $response['status'] = 'success';
@@ -1533,30 +1640,11 @@ class ConversationsController extends Controller
                         if (!$user->can('update', $conversation)) {
                             continue;
                         }
-                        if (!$conversation->mailbox->userHasAccess($new_user_id)) {
+                        if ((int) $new_user_id != -1 && !$conversation->mailbox->userHasAccess($new_user_id)) {
                             continue;
                         }
 
-                        $conversation->setUser($new_user_id);
-                        $conversation->save();
-
-                        // Create lineitem thread
-                        $thread = new Thread();
-                        $thread->conversation_id = $conversation->id;
-                        $thread->user_id = $conversation->user_id;
-                        $thread->type = Thread::TYPE_LINEITEM;
-                        $thread->state = Thread::STATE_PUBLISHED;
-                        $thread->status = Thread::STATUS_NOCHANGE;
-                        $thread->action_type = Thread::ACTION_TYPE_USER_CHANGED;
-                        $thread->source_via = Thread::PERSON_USER;
-                        // todo: this need to be changed for API
-                        $thread->source_type = Thread::SOURCE_TYPE_WEB;
-                        $thread->customer_id = $conversation->customer_id;
-                        $thread->created_by_user_id = $user->id;
-                        $thread->save();
-
-                        event(new ConversationUserChanged($conversation, $user));
-                        \Eventy::action('conversation.user_changed', $conversation, $user);
+                        $conversation->changeUser($new_user_id, $user);
                     }
 
                     $response['status'] = 'success';
@@ -1584,28 +1672,7 @@ class ConversationsController extends Controller
                             continue;
                         }
 
-                        $prev_status = $conversation->status;
-
-                        $conversation->setStatus($new_status, $user);
-                        $conversation->save();
-
-                        // Create lineitem thread
-                        $thread = new Thread();
-                        $thread->conversation_id = $conversation->id;
-                        $thread->user_id = $conversation->user_id;
-                        $thread->type = Thread::TYPE_LINEITEM;
-                        $thread->state = Thread::STATE_PUBLISHED;
-                        $thread->status = $conversation->status;
-                        $thread->action_type = Thread::ACTION_TYPE_STATUS_CHANGED;
-                        $thread->source_via = Thread::PERSON_USER;
-                        // todo: this need to be changed for API
-                        $thread->source_type = Thread::SOURCE_TYPE_WEB;
-                        $thread->customer_id = $conversation->customer_id;
-                        $thread->created_by_user_id = $user->id;
-                        $thread->save();
-
-                        event(new ConversationStatusChanged($conversation));
-                        \Eventy::action('conversation.status_changed_by_user', $conversation, $user, false, $prev_status);
+                        $conversation->changeStatus($new_status, $user);
                     }
 
                     $response['status'] = 'success';
@@ -1622,7 +1689,7 @@ class ConversationsController extends Controller
                 // At first, check if this user is able to delete conversations
                 if (!auth()->user()->isAdmin() && !auth()->user()->hasPermission(\App\User::PERM_DELETE_CONVERSATIONS)) {
                     $response['msg'] = __('Not enough permissions');
-                    \Session::flash('flash_success_floating', __('Conversations deleted'));
+                    //\Session::flash('flash_success_floating', __('Conversations deleted'));
 
                     return \Response::json($response);
                 }
@@ -1635,28 +1702,33 @@ class ConversationsController extends Controller
                         continue;
                     }
 
-                    $folder_id = $conversation->folder_id;
-                    $conversation->state = Conversation::STATE_DELETED;
-                    $conversation->user_updated_at = date('Y-m-d H:i:s');
-                    $conversation->updateFolder();
-                    $conversation->save();
+                    if ($conversation->state != Conversation::STATE_DELETED) {
+                        // Move to Deleted folder.
+                        $conversation->state = Conversation::STATE_DELETED;
+                        $conversation->user_updated_at = date('Y-m-d H:i:s');
+                        $conversation->updateFolder();
+                        $conversation->save();
 
-                    // Create lineitem thread
-                    $thread = new Thread();
-                    $thread->conversation_id = $conversation->id;
-                    $thread->user_id = $conversation->user_id;
-                    $thread->type = Thread::TYPE_LINEITEM;
-                    $thread->state = Thread::STATE_PUBLISHED;
-                    $thread->status = Thread::STATUS_NOCHANGE;
-                    $thread->action_type = Thread::ACTION_TYPE_DELETED_TICKET;
-                    $thread->source_via = Thread::PERSON_USER;
-                    $thread->source_type = Thread::SOURCE_TYPE_WEB;
-                    $thread->customer_id = $conversation->customer_id;
-                    $thread->created_by_user_id = $user->id;
-                    $thread->save();
+                        // Create lineitem thread
+                        $thread = new Thread();
+                        $thread->conversation_id = $conversation->id;
+                        $thread->user_id = $conversation->user_id;
+                        $thread->type = Thread::TYPE_LINEITEM;
+                        $thread->state = Thread::STATE_PUBLISHED;
+                        $thread->status = Thread::STATUS_NOCHANGE;
+                        $thread->action_type = Thread::ACTION_TYPE_DELETED_TICKET;
+                        $thread->source_via = Thread::PERSON_USER;
+                        $thread->source_type = Thread::SOURCE_TYPE_WEB;
+                        $thread->customer_id = $conversation->customer_id;
+                        $thread->created_by_user_id = $user->id;
+                        $thread->save();
 
-                    // Remove conversation from drafts folder.
-                    $conversation->removeFromFolder(Folder::TYPE_DRAFTS);
+                        // Remove conversation from drafts folder.
+                        $conversation->removeFromFolder(Folder::TYPE_DRAFTS);
+                    } else {
+                        // Delete forever
+                        $conversation->deleteForever();
+                    }
 
                     if (!array_key_exists($conversation->mailbox_id, $mailboxes_to_recalculate)) {
                         $mailboxes_to_recalculate[$conversation->mailbox_id] = $conversation->mailbox;
@@ -1671,7 +1743,31 @@ class ConversationsController extends Controller
                 \Session::flash('flash_success_floating', __('Conversations deleted'));
                 break;
 
-            // Change conversation customer
+            // Delete converations.
+            case 'empty_trash':
+                // At first, check if this user is able to delete conversations
+                if (!auth()->user()->isAdmin() && !auth()->user()->hasPermission(\App\User::PERM_DELETE_CONVERSATIONS)) {
+                    $response['msg'] = __('Not enough permissions');
+                    return \Response::json($response);
+                }
+
+                $folder = Folder::find($request->folder_id ?? '');
+
+                if (!$folder) {
+                    $response['msg'] = __('Folder not found');
+                }
+
+                if (!$response['msg']) {
+                    $conversation_ids = Conversation::where('folder_id', $folder->id)->pluck('id')->toArray();
+                    Conversation::deleteConversationsForever($conversation_ids);
+                    $folder->updateCounters();
+                }
+
+                $response['status'] = 'success';
+                \Session::flash('flash_success_floating', __('Conversations deleted'));
+                break;
+
+            // Move conversation to another mailbox.
             case 'conversation_move':
                 $conversation = Conversation::find($request->conversation_id);
 
@@ -1685,15 +1781,149 @@ class ConversationsController extends Controller
                     $response['msg'] = __('Not enough permissions');
                 }
 
-                $mailbox = Mailbox::find($request->mailbox_id);
-                if (!$mailbox) {
-                    $response['msg'] = __('Mailbox not found');
+                $mailbox = null;
+                if (!$response['msg']) {
+                    if (!empty($request->mailbox_email)) {
+                        $mailbox = Mailbox::where('email', $request->mailbox_email)->first();
+                    } else {
+                        $mailbox = Mailbox::find($request->mailbox_id);
+                    }
+
+                    if (!$mailbox) {
+                        $response['msg'] = __('Mailbox not found');
+                    }
                 }
 
-                $conversation->moveToMailbox($mailbox, $user);
+                if (!$response['msg']) {
+                    $prev_folder_id = Conversation::getFolderParam();
+                    $prev_mailbox_id = $conversation->mailbox_id;
 
-                $response['status'] = 'success';
-                \Session::flash('flash_success_floating', __('Conversation Moved'));
+                    $conversation->moveToMailbox($mailbox, $user);
+
+                    // If user does not have access to the new mailbox,
+                    // redirect to the previous mailbox.
+                    if (!$mailbox->userHasAccess($user->id)) {
+                        if (!empty($prev_folder_id)) {
+                            $response['redirect_url'] = route('mailboxes.view.folder', ['id' => $prev_mailbox_id, 'folder_id' => $prev_folder_id]);
+                        } else {
+                            $response['redirect_url'] = route('mailboxes.view', ['id' => $prev_mailbox_id]);
+                        }
+                    }
+
+                    $response['status'] = 'success';
+                    \Session::flash('flash_success_floating', __('Conversation moved'));
+                }
+
+                break;
+
+            // Merge conversations
+            case 'conversation_merge':
+                $conversation = Conversation::find($request->conversation_id);
+
+                if (!$conversation) {
+                    $response['msg'] = __('Conversation not found');
+                }
+                if (!$response['msg'] && !$user->can('view', $conversation)) {
+                    $response['msg'] = __('Not enough permissions');
+                }
+
+                $merge_conversation = Conversation::find($request->merge_conversation_id);
+
+                if (!$merge_conversation) {
+                    $response['msg'] = __('Conversation not found');
+                }
+                if (!$response['msg'] && !$user->can('view', $merge_conversation)) {
+                    $response['msg'] = __('Not enough permissions');
+                }
+
+                if (!$response['msg']) {
+                    $conversation->mergeConversations($merge_conversation, $user);
+
+                    $response['status'] = 'success';
+                    \Session::flash('flash_success_floating', __('Conversations merged'));
+                }
+
+                break;
+
+            // Follow conversation
+            case 'follow':
+            case 'unfollow':
+                $conversation = Conversation::find($request->conversation_id);
+
+                if (!$conversation) {
+                    $response['msg'] = __('Conversation not found');
+                }
+                if (!$response['msg'] && !$conversation->mailbox->userHasAccess($user->id)) {
+                    $response['msg'] = __('Not enough permissions');
+                }
+
+                if ($request->action == 'follow') {
+                    try {
+                        $follower = new Follower();
+                        $follower->conversation_id = $request->conversation_id;
+                        $follower->user_id = $user->id;
+                        $follower->save();
+                    } catch (\Exception $e) {
+                        // Already exists
+                    }
+                } else {
+                    $follower = Follower::where('conversation_id', $request->conversation_id)
+                        ->where('user_id', $user->id)
+                        ->first();
+                    if ($follower) {
+                        $follower->delete();
+                    }
+                }
+
+                if (!$response['msg']) {
+                    $response['status'] = 'success';
+                    if ($request->action == 'follow') {
+                        $response['msg_success'] = __('Following');
+                    } else {
+                        $response['msg_success'] = __('Unfollowed');
+                    }
+                }
+
+                break;
+
+            case 'update_subject':
+                $conversation = Conversation::find($request->conversation_id);
+
+                if (!$conversation) {
+                    $response['msg'] = __('Conversation not found');
+                }
+                if (!$response['msg'] && !$conversation->mailbox->userHasAccess($user->id)) {
+                    $response['msg'] = __('Not enough permissions');
+                }
+
+                $subject = $request->value ?? '';
+                $subject = trim($subject);
+
+                if (!$response['msg'] && $subject) {
+                    $conversation->subject = $subject;
+                    $conversation->save();
+
+                    $response['status'] = 'success';
+                }
+
+                break;
+
+            case 'merge_search':
+                $conversation = Conversation::where('number', $request->number)->first();
+
+                if (!$conversation) {
+                    $response['msg'] = __('Conversation not found');
+                }
+                if (!$response['msg'] && !$user->can('view', $conversation)) {
+                    $response['msg'] = __('Conversation not found');
+                }
+
+                if (!$response['msg']) {
+                    $response['html'] = \View::make('conversations/partials/merge_search_result')->with([
+                            'conversation' => $conversation
+                        ])->render();
+                    $response['status'] = 'success';
+                }
 
                 break;
 
@@ -1723,6 +1953,8 @@ class ConversationsController extends Controller
                 return $this->ajaxHtmlChangeCustomer();
             case 'move_conv':
                 return $this->ajaxHtmlMoveConv();
+            case 'merge_conv':
+                return $this->ajaxHtmlMergeConv();
         }
 
         abort(404);
@@ -1856,6 +2088,46 @@ class ConversationsController extends Controller
             'mailboxes'    => $user->mailboxesCanView(),
         ]);
     }
+    
+    /**
+     * Merge conversations.
+     */
+    public function ajaxHtmlMergeConv()
+    {
+        $conversation_id = Input::get('conversation_id');
+        if (!$conversation_id) {
+            abort(404);
+        }
+
+        $conversation = Conversation::find($conversation_id);
+        if (!$conversation) {
+            abort(404);
+        }
+
+        $user = auth()->user();
+
+        if (!$user->can('view', $conversation)) {
+            \Helper::denyAccess();
+        }
+
+        $prev_conversations = [];
+
+        if ($conversation->customer_id) {
+            $prev_conversations = $conversation->mailbox->conversations()
+                                    ->where('customer_id', $conversation->customer_id)
+                                    ->where('id', '<>', $conversation->id)
+                                    ->where('status', '!=', Conversation::STATUS_SPAM)
+                                    ->where('state', Conversation::STATE_PUBLISHED)
+                                    ->orderBy('created_at', 'desc')
+                                    ->paginate(500);
+        }
+
+        return view('conversations/ajax_html/merge_conv', [
+            'conversation' => $conversation,
+            'prev_conversations' => $prev_conversations,
+
+        ]);
+    }
 
     /**
      * Get redirect URL after performing an action.
@@ -1870,6 +2142,7 @@ class ConversationsController extends Controller
         if (!empty($request->after_send)) {
             $after_send = $request->after_send;
         } else {
+            // todo: use $user->mailboxSettings()
             $after_send = $conversation->mailbox->getUserSettings($user->id)->after_send;
         }
         if (!empty($after_send)) {
@@ -1879,7 +2152,11 @@ class ConversationsController extends Controller
                     $redirect_url = $conversation->url();
                     break;
                 case MailboxUser::AFTER_SEND_FOLDER:
-                    $redirect_url = route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $conversation->folder_id]);
+                    $folder_id = Conversation::getFolderParam();
+                    if (!$folder_id) {
+                        $folder_id = $conversation->folder_id;
+                    }
+                    $redirect_url = route('mailboxes.view.folder', ['id' => $conversation->mailbox_id, 'folder_id' => $folder_id]);
                     break;
                 case MailboxUser::AFTER_SEND_NEXT:
                     $redirect_url = $conversation->urlNext(Conversation::getFolderParam());
@@ -1948,25 +2225,22 @@ class ConversationsController extends Controller
      */
     public function ajaxConversationsPagination(Request $request, $response, $user)
     {
-        $mailbox = Mailbox::find($request->mailbox_id);
+        //$mailbox = Mailbox::find($request->mailbox_id);
         $folder = null;
         $conversations = [];
 
-        if (!$mailbox) {
-            $response['msg'] = __('Mailbox not found');
-        }
-
-        if (!$response['msg'] && !$user->can('view', $mailbox)) {
-            $response['msg'] = __('Not enough permissions');
-        }
-
         if (!$response['msg']) {
-            $folder = Folder::find($request->folder_id);
+            $folder = \Eventy::filter('conversations.ajax_pagination_folder', Folder::find($request->folder_id), $request, $response, $user);
             if (!$folder) {
                 $response['msg'] = __('Folder not found');
             }
         }
         if (!$response['msg'] && !$user->can('view', $folder)) {
+            $response['msg'] = __('Not enough permissions');
+        }
+
+        // We should not use mailbox_id from the request, as it can be changed.
+        if (!$response['msg'] && !$user->can('view', $folder->mailbox)) {
             $response['msg'] = __('Not enough permissions');
         }
 
@@ -2017,15 +2291,21 @@ class ConversationsController extends Controller
             session()->put('recent_search_queries', $recent_search_queries);
         }
 
-        $conversations = $this->searchQuery($request, $user, $q, $filters);
+        $conversations = [];
+        if (\Eventy::filter('search.is_needed', true, 'conversations')) {
+            $conversations = $this->searchQuery($user, $q, $filters);
+        }
         $customers = $this->searchCustomers($request, $user);
 
         // Dummy folder
         $folder = $this->getSearchFolder($conversations);
 
         // List of available filters.
-        $filters_list = \Eventy::filter('search.filters_list', Conversation::$search_filters, $mode, $filters, $q);
-        //$filters_list_all = \Eventy::filter('search.filters_list_all', array_merge(Conversation::$search_filters, Customer::$search_filters), $filters, $q);
+        if ($mode == Conversation::SEARCH_MODE_CONV) {
+            $filters_list = \Eventy::filter('search.filters_list', Conversation::$search_filters, $mode, $filters, $q);
+        } else {
+            $filters_list = \Eventy::filter('search.filters_list_customers', Customer::$search_filters, $mode, $filters, $q);
+        }
 
         $mailboxes = \Cache::remember('search_filter_mailboxes_'.$user->id, 5, function () use ($user) {
             return $user->mailboxesCanView();
@@ -2054,7 +2334,7 @@ class ConversationsController extends Controller
      * Search conversations.
      */
     public function getSearchMode($request)
-    {  
+    {
         $mode = Conversation::SEARCH_MODE_CONV;
         if (!empty($request->mode) && $request->mode == Conversation::SEARCH_MODE_CUSTOMERS) {
             $mode = Conversation::SEARCH_MODE_CUSTOMERS;
@@ -2065,90 +2345,9 @@ class ConversationsController extends Controller
     /**
      * Search conversations.
      */
-    public function searchQuery($request, $user, $q, $filters)
+    public function searchQuery($user, $q, $filters)
     {
-        // Get IDs of mailboxes to which user has access
-        $mailbox_ids = $user->mailboxesIdsCanView();
-
-        // Filters
-        //$filters = $request->f ?? [];
-
-        // Search query
-        //$q = $this->getSearchQuery($request);
-
-        // Like is case insensitive.
-        $like = '%'.mb_strtolower($q).'%';
-
-        $query_conversations = Conversation::select('conversations.*')
-            // https://github.com/laravel/framework/issues/21242
-            // https://github.com/laravel/framework/pull/27675
-            ->groupby('conversations.id')
-            ->whereIn('conversations.mailbox_id', $mailbox_ids)
-            ->join('threads', function ($join) {
-                $join->on('conversations.id', '=', 'threads.conversation_id');
-            });
-        if ($q) {
-            $query_conversations->where(function ($query) use ($like, $filters, $q) {
-                $query->where('conversations.subject', 'like', $like)
-                    ->orWhere('conversations.customer_email', 'like', $like)
-                    ->orWhere('conversations.number', 'like', $like)
-                    ->orWhere('conversations.id', 'like', $like)
-                    ->orWhere('threads.body', 'like', $like)
-                    ->orWhere('threads.from', 'like', $like)
-                    ->orWhere('threads.to', 'like', $like)
-                    ->orWhere('threads.cc', 'like', $like)
-                    ->orWhere('threads.bcc', 'like', $like);
-
-                $query = \Eventy::filter('search.conversations.or_where', $query, $filters, $q);
-            });
-        }
-
-        // Apply search filters.
-        if (!empty($filters['assigned'])) {
-            $query_conversations->where('conversations.user_id', $filters['assigned']);
-        }
-        if (!empty($filters['customer'])) {
-            $customer_id = $filters['customer'];
-            $query_conversations->where(function ($query) use ($customer_id) {
-                $query->where('conversations.customer_id', '=', $customer_id)
-                    ->orWhere('threads.created_by_customer_id', '=', $customer_id);
-            });
-        }
-        if (!empty($filters['mailbox'])) {
-            $query_conversations->where('conversations.mailbox_id', '=', $filters['mailbox']);
-        }
-        if (!empty($filters['status'])) {
-            $query_conversations->where('conversations.status', '=', $filters['status']);
-        }
-        if (!empty($filters['subject'])) {
-            $query_conversations->where('conversations.subject', 'like', '%'.mb_strtolower($filters['subject']).'%');
-        }
-        if (!empty($filters['attachments'])) {
-            $has_attachments = ($filters['attachments'] == 'yes' ? true : false);
-            $query_conversations->where('conversations.has_attachments', '=', $has_attachments);
-        }
-        if (!empty($filters['type'])) {
-            $query_conversations->where('conversations.has_attachments', '=', $filters['type']);
-        }
-        if (!empty($filters['body'])) {
-            $query_conversations->where('threads.body', 'like', '%'.mb_strtolower($filters['body']).'%');
-        }
-        if (!empty($filters['number'])) {
-            $query_conversations->where('conversations.number', '=', $filters['number']);
-        }
-        if (!empty($filters['id'])) {
-            $query_conversations->where('conversations.id', '=', $filters['id']);
-        }
-        if (!empty($filters['after'])) {
-            $query_conversations->where('conversations.created_at', '>=', date('Y-m-d 00:00:00', strtotime($filters['after'])));
-        }
-        if (!empty($filters['before'])) {
-            $query_conversations->where('conversations.created_at', '<=', date('Y-m-d 23:59:59', strtotime($filters['before'])));
-        }
-
-        $query_conversations = \Eventy::filter('search.conversations.apply_filters', $query_conversations, $filters, $q);
-
-        $query_conversations->orderBy('conversations.last_reply_at');
+        $query_conversations = Conversation::search($q, $filters, $user);
 
         return $query_conversations->paginate(Conversation::DEFAULT_LIST_SIZE);
     }
@@ -2212,7 +2411,9 @@ class ConversationsController extends Controller
         // Like is case insensitive.
         $like = '%'.mb_strtolower($q).'%';
 
-        $query_customers = Customer::select(['customers.*', 'emails.email'])
+        // We need to use aggregate function for email to avoid "Grouping error" error in PostgreSQL.
+        $query_customers = Customer::select(['customers.*', \DB::raw('MAX(emails.email)')])
+            ->groupby('customers.id')
             ->leftJoin('emails', function ($join) {
                 $join->on('customers.id', '=', 'emails.customer_id');
             })
@@ -2224,7 +2425,6 @@ class ConversationsController extends Controller
                     ->orWhere('customers.phones', 'like', $like)
                     ->orWhere('customers.websites', 'like', $like)
                     ->orWhere('customers.social_profiles', 'like', $like)
-                    ->orWhere('customers.chats', 'like', $like)
                     ->orWhere('customers.address', 'like', $like)
                     ->orWhere('customers.city', 'like', $like)
                     ->orWhere('customers.state', 'like', $like)
@@ -2232,6 +2432,14 @@ class ConversationsController extends Controller
                     ->orWhere('customers.zip', 'like', $like)
                     ->orWhere('emails.email', 'like', $like);
             });
+
+        if (!empty($filters['mailbox'])) {
+            $query_customers->join('conversations', function ($join) use ($filters) {
+                $join->on('conversations.customer_id', '=', 'customers.id');
+                //$join->on('conversations.mailbox_id', '=', $filters['mailbox']);
+            });
+            $query_customers->where('conversations.mailbox_id', '=', $filters['mailbox']);
+        }
 
         $query_customers = \Eventy::filter('search.customers.apply_filters', $query_customers, $filters, $q);
 
@@ -2258,7 +2466,7 @@ class ConversationsController extends Controller
     {
         if (array_key_exists('q', $request->filter)) {
             // Search
-            $conversations = $this->searchQuery($request, $user, $this->getSearchQuery($request), $this->getSearchFilters($request));
+            $conversations = $this->searchQuery($user, $this->getSearchQuery($request), $this->getSearchFilters($request));
         } else {
             // Filters
             $conversations = $this->conversationsFilterQuery($request, $user);
@@ -2268,6 +2476,7 @@ class ConversationsController extends Controller
 
         $response['html'] = view('conversations/conversations_table', [
             'conversations' => $conversations,
+            'params' => $request->params ?? [],
         ])->render();
 
         return $response;
@@ -2422,6 +2631,14 @@ class ConversationsController extends Controller
             $customer = Customer::getByEmail($request->to_email);
             if ($customer) {
                 $customer_email = $request->to_email;
+            }
+        }
+
+        // Try to find customer by phone.
+        if (!$customer && $request->phone) {
+            $customer = Customer::findByPhone($request->phone);
+            if ($customer) {
+                $customer_email = $customer->getMainEmail();
             }
         }
 

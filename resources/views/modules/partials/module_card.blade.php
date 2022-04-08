@@ -5,14 +5,17 @@
 		<img src="{{ App\Module::IMG_DEFAULT }}" />
 	@endif
 	<div class="module-wrap">
-	    <h4>{{ preg_replace("/ Module$/", '', $module['name']) }}@if (empty($module['installed'])) <span class="label label-lightgrey">{{ __('Not Installed') }}</span>@elseif (empty($module['active'])) <span class="label label-lightgrey">{{ __('Inactive') }}</span>@else <span class="label label-success">{{ __('Active') }}</span>@endif</h4>
+	    <h4>{{ App\Module::formatName($module['name']) }}@if (empty($module['installed'])) <span class="label label-lightgrey">{{ __('Not Installed') }}</span>@elseif (empty($module['active'])) <span class="label label-lightgrey">{{ __('Inactive') }}</span>@else <span class="label label-success">{{ __('Active') }}</span>@endif</h4>
 	    <p>
 	    	{{ $module['description'] }}
 	    </p>
 	    <div class="module-details">
 		    <span>{{ __('Version') }}: {{ $module['version'] }}</span>
-			@if (!empty($module['license']))
-		    	<span>| {{ __('License') }}: <small>{{ $module['license'] }}</small></span>
+		    @if (!empty($module['detailsUrl']))
+		    	| <a href="{{ $module['detailsUrl'] }}" target="_blank">{{ __('View details') }}</a>
+		    @endif
+			@if (!empty($module['license']) && Eventy::filter('modules.show_license', true))
+		    	<span>| {{ __('License') }}: <small><span class="license-key-text">{{ $module['license'] }}</span> <i class="deactivate-license-trigger glyphicon glyphicon-trash clickable" data-toggle="tooltip" title="{{ __('Deactivate the license for this domain (to use on another domain)') }}"></i></small></span>
 		    @endif
 		    @if (!empty($module['requiredAppVersion']) && !\Helper::checkAppVersion($module['requiredAppVersion']))
 		    	@php
@@ -23,8 +26,8 @@
 		    @if (!empty($module['requiredPhpExtensionsMissing']))
 		    	| <span class="text-danger nowrap">{{ __('Required PHP extensions') }}: <strong>{{ implode(', ', $module['requiredPhpExtensionsMissing']) }}</strong></span>
 		    @endif
-		    @if (!empty($module['detailsUrl']))
-		    	| <a href="{{ $module['detailsUrl'] }}" target="_blank">{{ __('View details') }}</a>
+		    @if (!empty($module['requiredModulesMissing']))
+		    	| <span class="text-danger nowrap">{{ __('Required Modules') }}: @foreach ($module['requiredModulesMissing'] as $missing_module => $missing_version)<strong>{{ $missing_module }} ({{ $missing_version }})</strong>@endforeach</span>
 		    @endif
 		    @if (!empty($module['installed']) && empty($module['active']) && empty($module['activated']))
 				| <a href="javascript" class="text-danger delete-module-trigger" data-loading-text="{{ __('Deleting') }}…">{{ __('Delete') }}</a>

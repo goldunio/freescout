@@ -34,6 +34,7 @@ class UsersController extends Controller
         $this->authorize('create', 'App\User');
 
         $users = User::nonDeleted()->get();
+        $users = User::sortUsers($users);
 
         return view('users/users', ['users' => $users]);
     }
@@ -56,21 +57,30 @@ class UsersController extends Controller
      */
     public function createSave(Request $request)
     {
+        $invalid = false;
         $this->authorize('create', 'App\User');
+        $auth_user = auth()->user();
 
         $rules = [
-            'role'       => 'integer',
             'first_name' => 'required|string|max:20',
             'last_name'  => 'required|string|max:30',
             'email'      => 'required|string|email|max:100|unique:users',
-            'role'       => ['required', Rule::in(array_keys(User::$roles))],
+            //'role'       => ['required', Rule::in(array_keys(User::$roles))],
         ];
+        if ($auth_user->isAdmin()) {
+            $rules['role'] = ['required', Rule::in(array_keys(User::$roles))];
+        }
         if (empty($request->send_invite)) {
             $rules['password'] = 'required|string|max:255';
         }
         $validator = Validator::make($request->all(), $rules);
 
-        if ($validator->fails()) {
+        if (User::mailboxEmailExists($request->email)) {
+            $invalid = true;
+            $validator->errors()->add('email', __('There is a mailbox with such email. Users and mailboxes can not have the same email addresses.'));
+        }
+
+        if ($invalid || $validator->fails()) {
             return redirect()->route('users.create')
                         ->withErrors($validator)
                         ->withInput();
@@ -78,6 +88,9 @@ class UsersController extends Controller
 
         $user = new User();
         $user->fill($request->all());
+        if (!$auth_user->can('changeRole', $user)) {
+            $user->role = User::ROLE_USER;
+        }
         if (empty($request->send_invite)) {
             // Set password from request
             $user->password = Hash::make($request->password);
@@ -125,7 +138,7 @@ class UsersController extends Controller
     public function getUsersForSidebar($except_id)
     {
         if (auth()->user()->isAdmin()) {
-            return User::all()->except($except_id);
+            return User::sortUsers(User::nonDeleted()->get());/*->except($except_id)*/;
         } else {
             return [];
         }
@@ -140,6 +153,8 @@ class UsersController extends Controller
      */
     public function profileSave($id, Request $request)
     {
+        $invalid = false;
+
         $user = User::findOrFail($id);
         $this->authorize('update', $user);
 
@@ -148,7 +163,7 @@ class UsersController extends Controller
             'first_name'  => 'required|string|max:20',
             'last_name'   => 'required|string|max:30',
             'email'       => 'required|string|email|max:100|unique:users,email,'.$id,
-            'emails'      => 'max:100',
+            //'emails'      => 'max:100',
             'job_title'   => 'max:100',
             'phone'       => 'max:60',
             'timezone'    => 'required|string|max:255',
@@ -168,6 +183,7 @@ class UsersController extends Controller
                 if ($path_url) {
                     $user->photo_url = $path_url;
                 } else {
+                    $invalid = true;
                     $validator->errors()->add('photo_url', __('Error occured processing the image. Make sure that PHP GD extension is enabled.'));
                 }
             }
@@ -176,12 +192,18 @@ class UsersController extends Controller
             if ($user->isAdmin() && isset($request->role) && $request->role != User::ROLE_ADMIN) {
                 $admins_count = User::where('role', User::ROLE_ADMIN)->count();
                 if ($admins_count < 2) {
+                    $invalid = true;
                     $validator->errors()->add('role', __('Role of the only one administrator can not be changed.'));
                 }
             }
         });
 
-        if ($validator->fails()) {
+        if (User::mailboxEmailExists($request->email)) {
+            $invalid = true;
+            $validator->errors()->add('email', __('There is a mailbox with such email. Users and mailboxes can not have the same email addresses.'));
+        }
+
+        if ($invalid || $validator->fails()) {
             return redirect()->route('users.profile', ['id' => $id])
                         ->withErrors($validator)
                         ->withInput();
@@ -199,6 +221,13 @@ class UsersController extends Controller
         }
         if (!auth()->user()->can('changeRole', $user)) {
             unset($request_data['role']);
+        }
+        if ($user->status != User::STATUS_DELETED) {
+            if (!empty($request_data['disabled'])) {
+                $request_data['status'] = User::STATUS_DISABLED;
+            } else {
+                $request_data['status'] = User::STATUS_ACTIVE;
+            }
         }
         $user->fill($request_data);
 
@@ -255,6 +284,21 @@ class UsersController extends Controller
         $user->mailboxes()->sync($request->mailboxes);
         $user->syncPersonalFolders($request->mailboxes);
 
+        // Save permissions.
+        $user_permissions = $request->user_permissions ?? [];
+        $permissions = [];
+
+        foreach (User::getUserPermissionsList() as $permission_id) {
+            $new_has_permission = in_array($permission_id, $user_permissions);
+
+            if ($user->hasPermission($permission_id, false) != $new_has_permission) {
+                $permissions[$permission_id] = (int)(bool)$new_has_permission;
+                $save_user = true;
+            }
+        }
+        $user->permissions = $permissions;
+        $user->save();
+
         \Session::flash('flash_success_floating', __('Permissions saved successfully'));
 
         return redirect()->route('users.permissions', ['id' => $id]);
@@ -282,6 +326,7 @@ class UsersController extends Controller
             'subscriptions' => $subscriptions,
             'person'        => $person,
             'users'         => $users,
+            'mobile_available' => \Eventy::filter('notifications.mobile_available', false),
         ]);
     }
 
@@ -440,7 +485,6 @@ class UsersController extends Controller
                 }
 
                 if (!$response['msg']) {
-                    event(new UserDeleted($user, $auth_user));
 
                     // We have to process conversations one by one to move them to Unassigned folder,
                     // as conversations may be in different mailboxes
@@ -516,6 +560,8 @@ class UsersController extends Controller
                     $user->email = mb_substr($user->email, 0, User::EMAIL_MAX_LENGTH - mb_strlen($email_suffix)).$email_suffix;
 
                     $user->save();
+
+                    event(new UserDeleted($user, $auth_user));
 
                     \Session::flash('flash_success_floating', __('User deleted').': '.$user->getFullName());
 

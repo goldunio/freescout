@@ -24,7 +24,11 @@ class ThreadObserver
         if (!in_array($thread->type, [Thread::TYPE_CUSTOMER])) {
             $conversation->user_updated_at = $now;
         }
-        if (in_array($thread->type, [Thread::TYPE_CUSTOMER, Thread::TYPE_MESSAGE]) && $thread->state == Thread::STATE_PUBLISHED) {
+        
+        if ((in_array($thread->type, [Thread::TYPE_CUSTOMER, Thread::TYPE_MESSAGE]) 
+            || ($conversation->isPhone() && in_array($thread->type, [Thread::TYPE_NOTE])))
+            && $thread->state == Thread::STATE_PUBLISHED
+        ) {
             // $conversation->cc = $thread->cc;
             // $conversation->bcc = $thread->bcc;
             $conversation->last_reply_at = $now;
@@ -44,5 +48,25 @@ class ThreadObserver
         }
 
         $conversation->save();
+
+        // $is_new_conversation = false;
+        // if ($conversation->threads_count == 0 
+        //     && in_array($thread->type, [Thread::TYPE_CUSTOMER, Thread::TYPE_MESSAGE, Thread::TYPE_NOTE])
+        //     && $thread->state == Thread::STATE_PUBLISHED
+        // ) {
+        //     $is_new_conversation = true;
+        // }
+
+        // User threads are created as drafts first.
+        // if ($thread->state == Thread::STATE_PUBLISHED) {
+        //     \Eventy::action('thread.created', $thread);
+        // }
+
+        // Real time for user notifications is sent using events.
+        if ($thread->type == Thread::TYPE_CUSTOMER 
+            || ($thread->type == Thread::TYPE_MESSAGE && $thread->state == Thread::STATE_DRAFT)
+        ) {
+            Conversation::refreshConversations($conversation, $thread);
+        }
     }
 }

@@ -2,6 +2,8 @@
 
 namespace App;
 
+use App\Email;
+use App\User;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Hash;
 use Watson\Rememberable\Rememberable;
@@ -9,6 +11,8 @@ use Watson\Rememberable\Rememberable;
 class Mailbox extends Model
 {
     use Rememberable;
+    // This is obligatory.
+    public $rememberCacheDriver = 'array';
 
     /**
      * From Name: name that will appear in the From field when a customer views your email.
@@ -90,6 +94,28 @@ class Mailbox extends Model
     const RATINGS_PLACEMENT_BELOW = 2;
 
     /**
+     * Access permissions.
+     */
+    const ACCESS_PERM_EDIT         = 'edit';
+    const ACCESS_PERM_PERMISSIONS  = 'perm';
+    const ACCESS_PERM_AUTO_REPLIES = 'auto';
+    const ACCESS_PERM_SIGNATURE    = 'sig';
+
+    public static $access_permissions = [
+        self::ACCESS_PERM_EDIT,
+        self::ACCESS_PERM_PERMISSIONS,
+        self::ACCESS_PERM_AUTO_REPLIES,
+        self::ACCESS_PERM_SIGNATURE,
+    ];
+
+    public static $access_routes = [
+        self::ACCESS_PERM_EDIT => 'mailboxes.update',
+        self::ACCESS_PERM_PERMISSIONS => 'mailboxes.permissions',
+        self::ACCESS_PERM_AUTO_REPLIES => 'mailboxes.auto_reply',
+        self::ACCESS_PERM_SIGNATURE => 'mailboxes.update',
+    ];
+
+    /**
      * Default signature set when mailbox created.
      */
     const DEFAULT_SIGNATURE = '<br><span style="color:#808080;">--<br>
@@ -102,20 +128,24 @@ class Mailbox extends Model
         'signature' => self::DEFAULT_SIGNATURE,
     ];
 
+    protected $casts = [
+        'meta' => 'array',
+    ];
+
     /**
      * Attributes fillable using fill() method.
      *
      * @var [type]
      */
-    protected $fillable = ['name', 'slug', 'email', 'aliases', 'auto_bcc', 'from_name', 'from_name_custom', 'ticket_status', 'ticket_assignee', 'template', 'signature', 'out_method', 'out_server', 'out_username', 'out_password', 'out_port', 'out_encryption', 'in_server', 'in_port', 'in_username', 'in_password', 'in_protocol', 'in_encryption', 'in_validate_cert', 'auto_reply_enabled', 'auto_reply_subject', 'auto_reply_message', 'office_hours_enabled', 'ratings', 'ratings_placement', 'ratings_text'];
+    protected $fillable = ['name', 'email', 'aliases', 'auto_bcc', 'from_name', 'from_name_custom', 'ticket_status', 'ticket_assignee', 'template', 'before_reply', 'signature', 'out_method', 'out_server', 'out_username', 'out_password', 'out_port', 'out_encryption', 'in_server', 'in_port', 'in_username', 'in_password', 'in_protocol', 'in_encryption', 'in_validate_cert', 'auto_reply_enabled', 'auto_reply_subject', 'auto_reply_message', 'office_hours_enabled', 'ratings', 'ratings_placement', 'ratings_text', 'imap_sent_folder'];
 
     protected static function boot()
     {
         parent::boot();
 
-        self::created(function (Mailbox $model) {
-            $model->slug = strtolower(substr(md5(Hash::make($model->id)), 0, 16));
-        });
+        // self::created(function (Mailbox $model) {
+        //     $model->slug = strtolower(substr(md5(Hash::make($model->id)), 0, 16));
+        // });
     }
 
     /**
@@ -123,7 +153,11 @@ class Mailbox extends Model
      */
     public function setInPasswordAttribute($value)
     {
-        $this->attributes['in_password'] = encrypt($value);
+        if ($value != '') {
+            $this->attributes['in_password'] = encrypt($value);
+        } else {
+            $this->attributes['in_password'] = '';
+        }
     }
 
     /**
@@ -139,7 +173,36 @@ class Mailbox extends Model
             return decrypt($value);
         } catch (\Exception $e) {
             // do nothing if decrypt wasn't succefull
-            return false;
+            return '';
+        }
+    }
+
+    /**
+     * Automatically encrypt password on save.
+     */
+    public function setOutPasswordAttribute($value)
+    {
+        if ($value != '') {
+            $this->attributes['out_password'] = encrypt($value);
+        } else {
+            $this->attributes['out_password'] = '';
+        }
+    }
+    
+    /**
+     * Automatically decrypt password on read.
+     */
+    public function getOutPasswordAttribute($value)
+    {
+        if (!$value) {
+            return '';
+        }
+
+        try {
+            return decrypt($value);
+        } catch (\Exception $e) {
+            // do nothing if decrypt wasn't succefull
+            return '';
         }
     }
 
@@ -148,7 +211,24 @@ class Mailbox extends Model
      */
     public function users()
     {
-        return $this->belongsToMany('App\User')->as('settings')->withPivot('after_send');
+        return $this->belongsToMany('App\User');
+    }
+
+    public function usersWithSettings()
+    {
+        return $this->belongsToMany('App\User')->as('settings')
+            ->withPivot('after_send')
+            ->withPivot('hide')
+            ->withPivot('mute')
+            ->withPivot('access');
+    }
+
+    /**
+     * Get users having access to the mailbox.
+     */
+    public function users_cached()
+    {
+        return $this->users()->rememberForever();
     }
 
     /**
@@ -204,11 +284,11 @@ class Mailbox extends Model
                 continue;
             }
             foreach ($folder_types as $type) {
-                $folder = new Folder();
-                $folder->mailbox_id = $mailbox_id;
-                $folder->user_id = $user_id;
-                $folder->type = $type;
-                $folder->save();
+                Folder::create([
+                    'mailbox_id' => $mailbox_id,
+                    'user_id' => $user_id,
+                    'type' => $type,
+                ]);
             }
         }
     }
@@ -245,6 +325,11 @@ class Mailbox extends Model
      */
     public function getMainFolders()
     {
+        $main_folders = \Eventy::filter('mailbox.main_folders', [], $this);
+        if ($main_folders) {
+            return $main_folders;
+        }
+        
         return $this->folders()
             ->where(function ($query) {
                 $query->whereIn('type', [Folder::TYPE_UNASSIGNED, Folder::TYPE_ASSIGNED, Folder::TYPE_DRAFTS])
@@ -276,9 +361,9 @@ class Mailbox extends Model
      */
     public function getAssesibleFolders()
     {
-        return $this->folders()
+        $folders = $this->folders()
             ->where(function ($query) {
-                $query->whereIn('type', Folder::$public_types)
+                $query->whereIn('type', \Eventy::filter('mailbox.folders.public_types', Folder::$public_types))
                     ->orWhere(function ($query2) {
                         $query2->whereIn('type', Folder::$personal_types);
                         $query2->where(['user_id' => auth()->user()->id]);
@@ -286,6 +371,8 @@ class Mailbox extends Model
             })
             ->orderBy('type')
             ->get();
+
+        return \Eventy::filter('mailbox.folders', $folders, $this);
     }
 
     /**
@@ -321,6 +408,12 @@ class Mailbox extends Model
      */
     public function isInActive()
     {
+        $in_active = \Eventy::filter('mailbox.in_active', null, $this);
+
+        if (is_bool($in_active)) {
+            return $in_active;
+        }
+
         if ($this->in_protocol && $this->in_server && $this->in_port && $this->in_username && $this->in_password) {
             return true;
         } else {
@@ -347,18 +440,57 @@ class Mailbox extends Model
     /**
      * Get users who have access to the mailbox.
      */
-    public function usersHavingAccess($cache = false, $fields = 'users.*')
+    public function usersHavingAccess($cache = false, $fields = 'users.*', $sort = true)
     {
-        $admins = User::where('role', User::ROLE_ADMIN)->select($fields)->remember(\App\Misc\Helper::cacheTime($cache))->get();
+        $admins = User::where('role', User::ROLE_ADMIN)->select($fields)->remember(\Helper::cacheTime($cache))->get();
 
-        $users = $this->users()->select($fields)->rememberForever()->get()->merge($admins)->unique();
+        $users = $this->users()->select($fields)->remember(\Helper::cacheTime($cache))->get()->merge($admins)->unique();
 
         // Exclude deleted users (better to do it in PHP).
         foreach ($users as $i => $user) {
-            if ($user->isDeleted()) {
+            if (!$user->isActive()) {
                 $users->forget($i);
             }
         }
+
+        // Sort by full name
+        if ($sort) {
+            $users = User::sortUsers($users);
+        }
+
+        return $users;
+    }
+
+    public function usersAssignable($cache = true)
+    {
+        // Exclude hidden admins.
+        $mailbox_id = $this->id;
+        $admins = User::select(['users.*', 'mailbox_user.hide'])
+            ->leftJoin('mailbox_user', function ($join) use ($mailbox_id) {
+                $join->on('mailbox_user.user_id', '=', 'users.id');
+                $join->where('mailbox_user.mailbox_id', $mailbox_id);
+            })
+            ->where('role', User::ROLE_ADMIN)
+            ->remember(\Helper::cacheTime($cache))
+            ->get();
+
+        $users = $this->users()->select('users.*')->remember(\Helper::cacheTime($cache))->get()->merge($admins)->unique();
+
+        foreach ($users as $i => $user) {
+            if (!empty($user->hide)) {
+                $users->forget($i);
+            }
+        }
+
+        // Exclude deleted users (better to do it in PHP).
+        foreach ($users as $i => $user) {
+            if (!$user->isActive()) {
+                $users->forget($i);
+            }
+        }
+
+        // Sort by full name
+        $users = User::sortUsers($users);
 
         return $users;
     }
@@ -384,7 +516,11 @@ class Mailbox extends Model
     public function userHasAccess($user_id, $user = null)
     {
         if (!$user) {
-            $user = User::find($user_id);
+            if ($user_id instanceof \App\User) {
+                $user = $user_id;
+            } else {
+                $user = User::find($user_id);
+            }
         }
         if ($user && $user->isAdmin()) {
             return true;
@@ -397,10 +533,11 @@ class Mailbox extends Model
      * Get From array for the Mail function.
      *
      * @param App\User $from_user
+     * @param App\Conversation $conversation
      *
      * @return array
      */
-    public function getMailFrom($from_user = null)
+    public function getMailFrom($from_user = null, $conversation = null)
     {
         // Mailbox name by default
         $name = $this->name;
@@ -411,7 +548,7 @@ class Mailbox extends Model
             $name = $from_user->getFullName();
         }
 
-        return ['address' => $this->email, 'name' => $name];
+        return [ 'address' => \Eventy::filter( 'mailbox.get_mail_from_address', $this->email, $from_user, $conversation ), 'name' => $name ];
     }
 
     /**
@@ -471,7 +608,32 @@ class Mailbox extends Model
      */
     public function getInProtocolName()
     {
-        return self::$in_protocols[$this->in_protocol];
+        return $this->getInProtocols()[$this->in_protocol] ?? '';
+    }
+
+    /**
+     * Get incoming protocol display name for the UI.
+     *
+     * @return array
+     */
+    public static function getInProtocolDisplayNames()
+    {
+        $display_names = self::$in_protocols;
+
+        $display_names[self::IN_PROTOCOL_IMAP] = 'IMAP';
+        $display_names[self::IN_PROTOCOL_POP3] = 'POP3';
+
+        return \Eventy::filter('mailbox.in_protocols.display_names', $display_names);
+    }
+
+    /**
+     * Get available incoming protocols.
+     *
+     * @return array
+     */
+    public static function getInProtocols()
+    {
+        return \Eventy::filter('mailbox.in_protocols', self::$in_protocols);
     }
 
     /**
@@ -479,17 +641,38 @@ class Mailbox extends Model
      */
     public function getUserSettings($user_id)
     {
-        $mailbox_user = $this->users()->where('users.id', $user_id)->first();
+        $mailbox_user = $this->usersWithSettings()->where('users.id', $user_id)->first();
         if ($mailbox_user) {
             return $mailbox_user->settings;
         } else {
             // Admin may have no record in mailbox_user table
-            // Create dummy object with default parameters
-            $settings = new \StdClass();
-            $settings->after_send = MailboxUser::AFTER_SEND_NEXT;
-
-            return $settings;
+            return self::getDummySettings();
         }
+    }
+
+    /**
+     * Create dummy object with default parameters
+     * @return [type] [description]
+     */
+    public static function getDummySettings()
+    {
+        $settings = new \StdClass();
+        $settings->after_send = MailboxUser::AFTER_SEND_NEXT;
+        $settings->hide = false;
+        $settings->mute = false;
+        $settings->access = [];
+
+        return $settings;
+    }
+
+    public function fetchUserSettings($user_id)
+    {
+        $settings = $this->getUserSettings($user_id);
+
+        $this->after_send = $settings->after_send;
+        $this->hide = $settings->hide;
+        $this->mute = $settings->mute;
+        $this->access = $settings->access;
     }
 
     /**
@@ -564,7 +747,7 @@ class Mailbox extends Model
      */
     public function url()
     {
-        return route('mailboxes.view', ['id' => $this->id]);
+        return \Eventy::filter('mailbox.url', route('mailboxes.view', ['id' => $this->id]), $this);
     }
 
     /**
@@ -596,7 +779,12 @@ class Mailbox extends Model
      */
     public function getInImapFolders()
     {
-        return \Helper::jsonToArray($this->in_imap_folders);
+        $in_imap_folders = \Helper::jsonToArray($this->in_imap_folders);
+        if (count($in_imap_folders)) {
+            return $in_imap_folders;
+        } else {
+            return ["INBOX"];
+        }
     }
 
     public function outPasswordSafe()
@@ -607,5 +795,97 @@ class Mailbox extends Model
     public function inPasswordSafe()
     {
         return \Helper::safePassword($this->in_password);
+    }
+
+    public function getReplySeparator()
+    {
+        return $this->before_reply ?: \MailHelper::REPLY_SEPARATOR_TEXT;
+    }
+
+    public static function findOrFailWithSettings($id, $user_id)
+    {
+        return Mailbox::select(['mailboxes.*', 'mailbox_user.hide', 'mailbox_user.mute', 'mailbox_user.access'])
+                        ->where('mailboxes.id', $id)
+                        ->leftJoin('mailbox_user', function ($join) use ($user_id) {
+                            $join->on('mailbox_user.mailbox_id', '=', 'mailboxes.id');
+                            $join->where('mailbox_user.user_id', $user_id);
+                        })->firstOrFail();
+    }
+
+    /*public static function getUserSettings($mailbox_id, $user_id)
+    {
+        return MailboxUser::where('mailbox_id', $mailbox_id)
+                            ->where('user_id', $user_id)
+                            ->first();
+    }*/
+
+    public static function getAccessPermissionName($perm)
+    {
+        $access_permissions = [
+            self::ACCESS_PERM_EDIT => __('Edit Mailbox'),
+            self::ACCESS_PERM_PERMISSIONS => __('Permissions'),
+            self::ACCESS_PERM_AUTO_REPLIES => __('Auto Replies'),
+            self::ACCESS_PERM_SIGNATURE => __('Email Signature'),
+        ];
+        $access_permissions = \Eventy::filter('mailbox.access_permissions_list', $access_permissions);
+
+        return $access_permissions[$perm] ?? '';
+    }
+
+    public static function getAccessPermissionRoute($perm)
+    {
+        $route = self::$access_routes[$perm] ?? '';
+        $route = \Eventy::filter('mailbox.access_permissions_route', $route, $perm);
+
+        return $route;
+    }
+
+    public function setMetaParam($param, $value, $save = false)
+    {
+        $meta = $this->meta;
+        $meta[$param] = $value;
+        $this->meta = $meta;
+
+        if ($save) {
+            $this->save();
+        }
+    }
+
+    public function removeMetaParam($param, $save = false)
+    {
+        $meta = $this->meta;
+        if (isset($meta[$param])) {
+            unset($meta[$param]);
+        }
+        $this->meta = $meta;
+
+        if ($save) {
+            $this->save();
+        }
+    }
+
+    /**
+     * Check if there is a user with specified email.
+     */
+    public static function userEmailExists($email)
+    {
+        $email = Email::sanitizeEmail($email);
+        $user = User::where('email', $email)->first();
+
+        if ($user) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public function oauthEnabled()
+    {
+        return !empty($this->meta['oauth']['provider']);
+    }
+
+    public function oauthGetParam($param)
+    {
+        return $this->meta['oauth'][$param] ?? '';
     }
 }

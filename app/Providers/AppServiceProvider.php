@@ -22,6 +22,7 @@ class AppServiceProvider extends ServiceProvider
         \App\Mailbox::observe(\App\Observers\MailboxObserver::class);
         // Eloquent events for this table are not called automatically, so need to be called manually.
         //\App\MailboxUser::observe(\App\Observers\MailboxUserObserver::class);
+        \App\Email::observe(\App\Observers\EmailObserver::class);
         \App\User::observe(\App\Observers\UserObserver::class);
         \App\Conversation::observe(\App\Observers\ConversationObserver::class);
         \App\Thread::observe(\App\Observers\ThreadObserver::class);
@@ -53,17 +54,18 @@ class AppServiceProvider extends ServiceProvider
         // Process module registration error - disable module and show error to admin
         \Eventy::addFilter('modules.register_error', function ($exception, $module) {
 
+            $msg = __('The :module_name module has been deactivated due to an error: :error_message', ['module_name' => $module->getName(), 'error_message' => $exception->getMessage()]);
+
+            \Log::error($msg);
+
             // request() does is empty at this stage
             if (!empty($_POST['action']) && $_POST['action'] == 'activate') {
 
                 // During module activation in case of any error we have to deactivate module.
                 \App\Module::deactiveModule($module->getAlias());
 
-                // if (\App::runningInConsole()) {
-                //     echo __('The plugin :module_name has been deactivated due to an error: :error_message', ['module_name' => $module->getName(), 'error_message' => $exception->getMessage()]);
-                // } else {
                 \Session::flash('flashes_floating', [[
-                    'text' => __('The plugin :module_name has been deactivated due to an error: :error_message', ['module_name' => $module->getName(), 'error_message' => $exception->getMessage()]),
+                    'text' => $msg,
                     'type' => 'danger',
                     'role' => \App\User::ROLE_ADMIN,
                 ]]);
@@ -76,7 +78,7 @@ class AppServiceProvider extends ServiceProvider
                     \App\Module::deactiveModule($module->getAlias());
 
                     \Session::flash('flashes_floating', [[
-                        'text' => __('The plugin :module_name has been deactivated due to an error: :error_message', ['module_name' => $module->getName(), 'error_message' => $exception->getMessage()]),
+                        'text' => $msg,
                         'type' => 'danger',
                         'role' => \App\User::ROLE_ADMIN,
                     ]]);

@@ -17,7 +17,7 @@ class SendNotificationToUsers implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     // Max retries + 1
-    public $tries = 6;
+    public $tries = 168; // One per hour
 
     public $users;
 
@@ -47,19 +47,32 @@ class SendNotificationToUsers implements ShouldQueue
         $mailbox = $this->conversation->mailbox;
 
         // Configure mail driver according to Mailbox settings
-        \App\Misc\Mail::setMailDriver($mailbox);
+        \App\Misc\Mail::setMailDriver($mailbox, null, $this->conversation);
 
         // Threads has to be sorted here, if sorted before, they come here in wrong order
         $this->threads = $this->threads->sortByDesc(function ($item, $key) {
-            return $item->created_at;
+            return $item->id;
         });
 
         $headers = [];
         $last_thread = $this->threads->first();
 
+        if (!$last_thread) {
+            return;
+        }
+
         // If thread is draft, it means it has been undone
         if ($last_thread->isDraft()) {
             return;
+        }
+
+        // Limit conversation history
+        if (config('app.email_user_history') == 'last') {
+            $this->threads = $this->threads->slice(0, 2);
+        }
+
+        if (config('app.email_user_history') == 'none') {
+            $this->threads = $this->threads->slice(0, 1);
         }
 
         // All notification for the same conversation has same dummy Message-ID
@@ -71,6 +84,11 @@ class SendNotificationToUsers implements ShouldQueue
         $global_exception = null;
 
         foreach ($this->users as $user) {
+
+            // User cam ne deleted.
+            if (!isset($user->id)) {
+                continue;
+            }
 
             // If for one user sending fails the job is marked as failed and retried after some time.
             // So we have to check if notification email has already been successfully sent to this user.
@@ -92,7 +110,10 @@ class SendNotificationToUsers implements ShouldQueue
             // If this is notification on message from customer, set customer as sender name
             $from_name = '';
             if ($last_thread->type == Thread::TYPE_CUSTOMER) {
-                $from_name = $last_thread->customer->getFullName();
+                $from_name = '';
+                if ($last_thread->customer) {
+                    $from_name = $last_thread->customer->getFullName(true, true);
+                }
                 if ($from_name) {
                     $from_name = $from_name.' '.__('via').' '.$mailbox->name;
                 }
@@ -104,6 +125,9 @@ class SendNotificationToUsers implements ShouldQueue
 
             // Set user language
             app()->setLocale($user->getLocale());
+
+            $headers['X-FreeScout-Mail-Type'] = 'user.notification';
+            $headers = \Eventy::filter('jobs.send_reply_to_customer.headers', $headers, $user, $mailbox, $this->conversation, $this->threads, $from);
 
             $exception = null;
 
@@ -146,7 +170,13 @@ class SendNotificationToUsers implements ShouldQueue
             // Retry job with delay.
             // https://stackoverflow.com/questions/35258175/how-can-i-create-delays-between-failed-queued-job-attempts-in-laravel
             if ($this->attempts() < $this->tries) {
-                $this->release(3600);
+                if ($this->attempts() == 1) {
+                    // Second attempt after 5 min.
+                    $this->release(300);
+                } else {
+                    // Others - after 1 hour.
+                    $this->release(3600);
+                }
 
                 throw $global_exception;
             } else {

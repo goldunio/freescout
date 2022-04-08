@@ -1,4 +1,4 @@
-{{-- 
+{{--
     Languages strings and custom variables passed to JS.
     After changing this file make sure to run:
         php artisan freescout:build
@@ -14,7 +14,7 @@ var Vars = {
     conv_type_phone: '{{ \App\Conversation::TYPE_PHONE }}'
 };
 
-{{-- 
+{{--
     Localized JS strings.
     Usage:
         Lang.get('messages.ajax_error');
@@ -22,6 +22,9 @@ var Vars = {
 --}}
 var LangMessages = {
     @foreach ($locales as $locale)
+        @php
+            app()->setLocale($locale);
+        @endphp
         "{{ $locale }}.messages": {
             {{-- Add here strings which you need to be translated in JS--}}
             "ajax_error": "{{ __("Error occured. Please check your internet connection and try again.") }}",
@@ -45,6 +48,10 @@ var LangMessages = {
             "first_name": "{{ __("First Name") }}",
             "last_name": "{{ __("Last Name") }}",
             "email_addr": "{{ __("Email Address") }}",
+            "job_title": "{{ __("Job Title") }}",
+            "phone": "{{ __("Phone Number") }}",
+            "photo_url": "{{ __("Profile Photo (URL)") }}",
+            "from_name": "{{ __("From name") }}",
             "user": "{{ __("User") }}",
             "confirm_change_customer": "{{ __("Change the customer to :customer_email?") }}",
             "invite_sent": "{{ __("Invite email has been sent") }}",
@@ -69,12 +76,17 @@ var LangMessages = {
             "add_lower": "{{ __("add") }}",
             "user_viewing": "{{ __(":user is viewing") }}",
             "user_replying": "{{ __(":user is replying") }}",
-
+            "new_message": "{{ __("New message") }}",
+            "view_new_message": "{{ __("View new message") }}",
+            "view_new_messages": "{{ __("View new messages (:count)") }}",
+            @action('js.lang.messages')
             "update": "{{ __("Update") }}"
         }@if (!$loop->last),@endif
     @endforeach
 };
-
+@php
+    app()->setLocale(\Helper::getRealAppLocale());
+@endphp
 (function () {
     Lang = new Lang();
     Lang.setMessages(LangMessages);

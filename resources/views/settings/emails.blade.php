@@ -1,7 +1,7 @@
 <form class="form-horizontal margin-top" method="POST" action="">
     {{ csrf_field() }}
 
-    <h3>{{ __('System Emails') }}</h3>
+    <h3 class="subheader">{{ __('System Emails') }}</h3>
     <div class="descr-block">
         <p>{{ __("These settings are used to send system emails (alerts to admin and invitation emails to users).") }}</p>
 
@@ -84,8 +84,8 @@
             <div class="col-sm-6">
                 <select id="mail_encryption" class="form-control input-sized" name="settings[mail_encryption]">
                     <option value="{{ \MailHelper::MAIL_ENCRYPTION_NONE }}" @if (old('settings.mail_encryption', $settings['mail_encryption']) == \MailHelper::MAIL_ENCRYPTION_NONE)selected="selected"@endif>{{ __('None') }}</option>
-                    <option value="{{ \MailHelper::MAIL_ENCRYPTION_SSL }}" @if (old('settings.mail_encryption', $settings['mail_encryption']) ==  \MailHelper::MAIL_ENCRYPTION_SSL)selected="selected"@endif>{{ __('SSL') }}</option>
-                    <option value="{{ \MailHelper::MAIL_ENCRYPTION_TLS }}" @if (old('settings.mail_encryption', $settings['mail_encryption']) == \MailHelper::MAIL_ENCRYPTION_TLS)selected="selected"@endif>{{ __('TLS') }}</option>
+                    <option value="{{ \MailHelper::MAIL_ENCRYPTION_SSL }}" @if (old('settings.mail_encryption', $settings['mail_encryption']) ==  \MailHelper::MAIL_ENCRYPTION_SSL)selected="selected"@endif>SSL</option>
+                    <option value="{{ \MailHelper::MAIL_ENCRYPTION_TLS }}" @if (old('settings.mail_encryption', $settings['mail_encryption']) == \MailHelper::MAIL_ENCRYPTION_TLS)selected="selected"@endif>TLS</option>
                 </select>
 
                 @include('partials/field_error', ['field'=>'settings.mail_encryption'])
@@ -108,8 +108,7 @@
         </div>
     </div>
 
-    <hr/>
-    <h3>{{ __('Fetching Emails') }}</h3>
+    <h3 class="subheader">{{ __('Fetching Emails') }}</h3>
     <div class="form-group{{ $errors->has('settings.fetch_schedule') ? ' has-error' : '' }}">
         <label for="fetch_schedule" class="col-sm-2 control-label">{{ __('Fetch Mail Schedule') }}</label>
 

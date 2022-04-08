@@ -8,9 +8,10 @@
                 <button type="button" class="btn btn-default" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="{{ __("Assignee") }}">
                     <span class="glyphicon glyphicon-user"></span><span class="caret"></span>
                 </button>
-                <ul class="dropdown-menu conv-user">
+                <ul class="dropdown-menu conv-user dm-scrollable">
+                    <li><a href="#" data-user_id="-1">{{ __("Anyone") }}</a></li>
                     <li><a href="#" data-user_id="{{ Auth::user()->id }}">{{ __("Me") }}</a></li>
-                    @foreach ($mailbox->usersHavingAccess(true) as $user)
+                    @foreach ($mailbox->usersAssignable() as $user)
                         @if ($user->id != Auth::user()->id)
                             <li><a href="#" data-user_id="{{ $user->id }}">{{ $user->getFullName() }}</a></li>
                         @endif
@@ -28,13 +29,7 @@
                 @endforeach
             </ul>
         </div>
-        {{--<div class="btn-group">
-            <button type="button" class="btn btn-default" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false" title="{{ __("Tag") }}">
-                <span class="glyphicon glyphicon-tag"></span>
-            </button>
-            <ul class="dropdown-menu conv-tag">
-            </ul>
-        </div>--}}
+        @action('bulk_actions.before_delete', $mailbox ?? null)
         <button type="button" class="btn btn-default conv-delete" title="{{ __("Delete") }}">
             <span class="glyphicon glyphicon-trash"></span>
         </button>
@@ -45,7 +40,7 @@
     <div class="text-center">
         <div class="text-larger margin-top-10">{{ __("Delete the conversations?") }}</div>
         <div class="form-group margin-top">
-            <button class="btn btn-primary delete-conversation-ok">{{ __("Delete") }}</button>
+            <button class="btn btn-primary delete-conversation-ok" data-loading-text="{{ __("Deleting") }}…">{{ __("Delete") }}</button>
             <button class="btn btn-link" data-dismiss="modal">{{ __("Cancel") }}</button>
         </div>
     </div>

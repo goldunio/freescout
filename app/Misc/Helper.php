@@ -21,9 +21,23 @@ class Helper
     const PREVIEW_MAXLENGTH = 255;
 
     /**
-     * Deafult background job queue;
+     * Deafult background job queue.
      */
     const QUEUE_DEFAULT = 'default';
+
+    /**
+     * Stores list of global entities (for caching).
+     */
+    public static $global_entities = [];
+
+    /**
+     * Files with such extensions are being renamed on upload.
+     */
+    public static $restricted_extensions = [
+        'php.*',
+        'sh',
+        'pl',
+    ];
 
     /**
      * Menu structure used to display active menu item.
@@ -38,7 +52,7 @@ class Helper
             'conversations.view',
             'conversations.create',
             'conversations.draft',
-            'conversations.search',
+            //'conversations.search',
         ],
         'manage' => [
             'settings'  => 'settings',
@@ -462,6 +476,16 @@ class Helper
         }
     }
 
+    public static function setGlobalEntity($name, $entity)
+    {
+        self::$global_entities[$name] = $entity;
+    }
+
+    public static function getGlobalEntity($name)
+    {
+        return self::$global_entities[$name] ?? null;
+    }
+
     /**
      * Remove from text all tags, double spaces, etc.
      */
@@ -469,7 +493,7 @@ class Helper
     {
         // Remove all kinds of spaces after tags.
         // https://stackoverflow.com/questions/3230623/filter-all-types-of-whitespace-in-php
-        $text = preg_replace("/^(.*)>[\r\n]*\s+/mu", '$1>', $text);
+        $text = preg_replace("/^(.*)>[\r\n]*\s+/mu", '$1>', $text ?? '');
 
         // Remove <script> and <style> blocks.
         $text = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $text);
@@ -493,7 +517,7 @@ class Helper
         // $text = urldecode($text);
 
         $text = trim(preg_replace('/[ ]+/', ' ', $text));
-        
+
         return $text;
     }
 
@@ -552,7 +576,7 @@ class Helper
                     }
                 } else {
                     if ($current_route == $secondary_routes) {
-                        return $primary_name == $menu_item_name;
+                        return $primary_name == $menu_item_name || $menu_item_name == $secondary_routes;
                     }
                 }
             }
@@ -582,8 +606,14 @@ class Helper
 
         if (preg_match('/png/i', $mime_type)) {
             $src = imagecreatefrompng($file);
+
+            $kek = imagecolorallocate($src, 255, 255, 255);
+            imagefill($src, 0, 0, $kek);
         } elseif (preg_match('/gif/i', $mime_type)) {
             $src = imagecreatefromgif($file);
+
+            $kek = imagecolorallocate($src, 255, 255, 255);
+            imagefill($src, 0, 0, $kek);
         } elseif (preg_match('/bmp/i', $mime_type)) {
             $src = imagecreatefrombmp($file);
         } else {
@@ -609,10 +639,11 @@ class Helper
         // Resize and crop
         imagecopyresampled($thumb,
                            $src,
-                           0 - ($new_width - $thumb_width) / 2, // Center the image horizontally
-                           0 - ($new_height - $thumb_height) / 2, // Center the image vertically
+                           ceil(0 - ($new_width - $thumb_width) / 2), // Center the image horizontally
+                           ceil(0 - ($new_height - $thumb_height) / 2), // Center the image vertically
                            0, 0,
-                           $new_width, $new_height,
+                           ceil($new_width),
+                           ceil($new_height),
                            $width, $height);
         imagedestroy($src);
 
@@ -645,34 +676,37 @@ class Helper
      * Create zip archive.
      * Source example: public/files/*
      * File name example: test.zip.
+     * storage_path without app/
      */
-    public static function createZipArchive($source, $file_name, $folder = '')
+    public static function createZipArchive($source, $file_name, $folder = '', $storage_file_path = '')
     {
         if (!$source || !$file_name) {
             return false;
         }
         $files = glob($source);
 
-        //$dest_folder = storage_path().DIRECTORY_SEPARATOR.'app/zipper';
-        // if (!file_exists($dest_folder)) {
-        //     $mkdir_result = File::makeDirectory($dest_folder, 0755);
-        //     if (!$mkdir_result) {
-        //         return false;
-        //     }
-        // }
-
-        $storage_path = 'app/zipper'.DIRECTORY_SEPARATOR.$file_name;
-        $dest_path = storage_path().DIRECTORY_SEPARATOR.$storage_path;
+        if (!$storage_file_path) {
+            $storage_file_path = 'zipper'.DIRECTORY_SEPARATOR.$file_name;
+        } else {
+            // if (!self::getPrivateStorage()->exists($storage_path)) {
+            //     self::getPrivateStorage()->makeDirectory($storage_path);
+            // }
+        }
+        $dest_path = storage_path().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.$storage_file_path;
 
         // If file exists it has to be deleted, otherwise Zipper will add file to the existing archive
-        // By some reason \Storage not finding $storage_path file
-        // todo: use \Storage
-        if (\File::exists($dest_path)) {
-            \File::delete($dest_path);
+        if (self::getPrivateStorage()->exists($storage_file_path)) {
+            self::getPrivateStorage()->delete($storage_file_path);
         }
+
         \Chumper\Zipper\Facades\Zipper::make($dest_path)->folder($folder)->add($files)->close();
 
         return $dest_path;
+    }
+
+    public static function getPrivateStorage()
+    {
+        return \Storage::disk('private');
     }
 
     public static function formatException($e)
@@ -703,8 +737,10 @@ class Helper
     public static function downloadRemoteFile($url, $destinationFilePath)
     {
         $client = new \GuzzleHttp\Client();
+
         $client->request('GET', $url, [
             'sink' => $destinationFilePath,
+            'connect_timeout' => 7,
         ]);
     }
 
@@ -717,9 +753,12 @@ class Helper
         \Chumper\Zipper\Facades\Zipper::make($archive)->extractTo($to);
     }
 
-    public static function logException($e)
+    public static function logException($e, $prefix = '')
     {
-        \Log::error(self::formatException($e));
+        if ($prefix) {
+            $prefix .= ' ';
+        }
+        \Log::error($prefix.self::formatException($e));
     }
 
     /**
@@ -758,6 +797,18 @@ class Helper
     }
 
     /**
+     * Log exception to activity log.
+     */
+    public static function logExceptionToActivityLog($e, $log_name, $description, $properties = [])
+    {
+        $properties['error'] = self::formatException($e);
+        activity()
+            ->withProperties($properties)
+            ->useLog($log_name)
+            ->log($description);
+    }
+
+    /**
      * Check if folder is writable.
      *
      * @param [type] $path [description]
@@ -782,6 +833,13 @@ class Helper
             }
         } catch (\Exception $e) {
             return false;
+        }
+    }
+
+    public static function setLocale($locale)
+    {
+        if (in_array($locale, config('app.locales'))) {
+            app()->setLocale($locale);
         }
     }
 
@@ -830,9 +888,13 @@ class Helper
         $env_path = app()->environmentFilePath();
         $contents = file_get_contents($env_path);
 
-        // Maybe validate value and add quotes.
-        // str_contains($key, '=')
-        // !preg_match('/^[a-zA-Z_]+$/', $key)
+        if (strstr($value, '"')) {
+            // Escape quotes.
+            $value = '"'.str_replace('"', '\"', $value).'"';
+        } elseif (!preg_match('/^[a-zA-Z0-9_]+$/', $value) && $value !== '') {
+            // Add quotes.
+            $value = '"'.$value.'"';
+        }
 
         $old_value = '';
         // Match the given key at the beginning of a line
@@ -869,6 +931,26 @@ class Helper
     }
 
     /**
+     * Get built in and custom locales.
+     *
+     * @return [type] [description]
+     */
+    public static function getAllLocales()
+    {
+        $app_locales = config('app.locales');
+
+        // User may add an extra translation to the app on Translate page,
+        // we should allow user to see his custom translations.
+        $custom_locales = \Helper::getCustomLocales();
+
+        if (count($custom_locales)) {
+            $app_locales = array_unique(array_merge($app_locales, $custom_locales));
+        }
+
+        return $app_locales;
+    }
+
+    /**
      *  app()->setLocale() in Localize middleware also changes config('app.locale'),
      *  so we are keeping real app locale in real_locale parameter.
      */
@@ -884,6 +966,8 @@ class Helper
      */
     public static function backgroundAction($action, $params, $delay = 0)
     {
+        $delay = \Eventy::filter('backgound_action.dispatch_delay', $delay, $action, $params);
+
         $job = \App\Jobs\TriggerAction::dispatch($action, $params);
         if ($delay) {
             $job->delay($delay);
@@ -896,17 +980,22 @@ class Helper
      *
      * @param [type] $text [description]
      */
-    public static function htmlToText($text)
+    public static function htmlToText($text, $embed_images = false, $options = ['width' => 0])
     {
         // Process blockquotes.
         $text = str_ireplace('<blockquote>', '<div>', $text);
         $text = str_ireplace('</blockquote>', '</div>', $text);
-        return (new \Html2Text\Html2Text($text))->getText();
+
+        if ($embed_images) {
+            // Replace embedded images with their urls.
+            $text = preg_replace( '/<img\b[^>]*src=\"([^>"]+)\"[^>]*>/i', "<div>$1</div>", $text);
+        }
+        return (new \Html2Text\Html2Text($text, $options))->getText();
     }
 
     /**
      * Trim text removing non-breaking spaces also.
-     * 
+     *
      * @param  [type] $text [description]
      * @return [type]       [description]
      */
@@ -920,7 +1009,7 @@ class Helper
 
     /**
      * Unicode escape sequences like “\u00ed” to proper UTF-8 encoded characters.
-     * 
+     *
      * @param  [type] $text [description]
      * @return [type]       [description]
      */
@@ -941,7 +1030,7 @@ class Helper
         $subdirectory = '';
 
         $app_url = config('app.url');
-        
+
         // Check host to ignore default values.
         $app_host = parse_url($app_url, PHP_URL_HOST);
 
@@ -957,7 +1046,7 @@ class Helper
                 $subdirectory = $_SERVER['SCRIPT_NAME'];
             } elseif (basename($_SERVER['PHP_SELF']) === $filename) {
                 $subdirectory = $_SERVER['PHP_SELF'];
-            } elseif (basename($_SERVER['ORIG_SCRIPT_NAME']) === $filename) {
+            } elseif (array_key_exists('ORIG_SCRIPT_NAME', $_SERVER) && basename($_SERVER['ORIG_SCRIPT_NAME']) === $filename) {
                 $subdirectory = $_SERVER['ORIG_SCRIPT_NAME']; // 1and1 shared hosting compatibility
             } else {
                 // Backtrack up the script_filename to find the portion matching
@@ -975,6 +1064,10 @@ class Helper
                     ++$index;
                 } while ($last > $index && (false !== $pos = strpos($path, $subdirectory)) && 0 != $pos);
             }
+        }
+
+        if ($subdirectory === null) {
+            $subdirectory = '';
         }
 
         $subdirectory = str_replace('public/index.php', '', $subdirectory);
@@ -1150,6 +1243,10 @@ class Helper
 
     public static function purifyHtml($html)
     {
+        if (!$html) {
+            return $html;
+        }
+
         $html = \Purifier::clean($html);
 
         // Remove all kinds of spaces after tags
@@ -1164,6 +1261,361 @@ class Helper
      */
     public static function safePassword($password)
     {
-        return str_repeat("*", mb_strlen($password));
+        return str_repeat("*", mb_strlen($password ?? ''));
+    }
+
+    /**
+     * Turn all URLs in clickable links.
+     * Released under public domain
+     * https://gist.github.com/jasny/2000705
+     *
+     * @param string $value
+     * @param array  $protocols  http/https, ftp, mail
+     * @param array  $attributes
+     * @return string
+     */
+    public static function linkify($value, $protocols = ['http', 'mail'], array $attributes = [])
+    {
+        // Link attributes
+        $attr = '';
+        foreach ($attributes as $key => $val) {
+            $attr .= ' ' . $key . '="' . htmlentities($val) . '"';
+        }
+
+        $links = array();
+
+        // Extract existing links and tags
+        $value = preg_replace_callback('~(<a .*?>.*?</a>|<.*?>)~i', function ($match) use (&$links) { return '<' . array_push($links, $match[1]) . '>'; }, $value);
+
+        // Extract text links for each protocol
+        foreach ((array)$protocols as $protocol) {
+            switch ($protocol) {
+                case 'http':
+                case 'https':   $value = preg_replace_callback('~(?:(https?)://([^\s<]+)|(www\.[^\s<]+?\.[^\s<]+))(?<![\.,:])~i', function ($match) use ($protocol, &$links, $attr) { if ($match[1]) $protocol = $match[1]; $link = $match[2] ?: $match[3]; return '<' . array_push($links, "<a $attr href=\"$protocol://$link\">$protocol://$link</a>") . '>'; }, $value); break;
+                case 'mail':    $value = preg_replace_callback('~([^\s<>]+?@[^\s<]+?\.[^\s<]+)(?<![\.,:])~', function ($match) use (&$links, $attr) { return '<' . array_push($links, "<a $attr href=\"mailto:{$match[1]}\">{$match[1]}</a>") . '>'; }, $value); break;
+                default:        $value = preg_replace_callback('~' . preg_quote($protocol, '~') . '://([^\s<]+?)(?<![\.,:])~i', function ($match) use ($protocol, &$links, $attr) { return '<' . array_push($links, "<a $attr href=\"$protocol://{$match[1]}\">$protocol://{$match[1]}</a>") . '>'; }, $value); break;
+            }
+        }
+
+        // Insert all link
+        return preg_replace_callback('/<(\d+)>/', function ($match) use (&$links) { return $links[$match[1] - 1]; }, $value);
+    }
+
+    /**
+     * Generates unique ID of the application.
+     */
+    public static function getAppIdentifier()
+    {
+        $identifier = md5(config('app.key').parse_url(config('app.url'), PHP_URL_HOST));
+
+        return $identifier;
+    }
+
+    /**
+     * Are we in the mobile app.
+     */
+    public static function isInApp()
+    {
+        return (int)app('request')->cookie('in_app');
+    }
+
+    /**
+     * Get identifier for queue:work
+     */
+    public static function getWorkerIdentifier()
+    {
+        return md5(config('app.key') ?? '');
+    }
+
+    public static function uploadFile($file, $allowed_exts = [], $allowed_mimes = [], $sanitize_file_name = true)
+    {
+        $ext = strtolower($file->getClientOriginalExtension());
+
+        if ($allowed_exts) {
+            if (!in_array($ext, $allowed_exts)) {
+                throw new \Exception(__('Unsupported file type'), 1);
+            }
+        }
+
+        if ($allowed_mimes) {
+            $mime_type = $file->getMimeType();
+            if (!in_array($mime_type, $allowed_mimes)) {
+                throw new \Exception(__('Unsupported file type'), 1);
+            }
+        }
+        $file_name = \Str::random(25).'.'.$ext;
+
+        if ($sanitize_file_name) {
+            $file_name = \Helper::sanitizeUploadedFileName($file_name);
+        }
+
+        $file->storeAs('uploads', $file_name);
+
+        return self::uploadedFilePath($file_name);
+    }
+
+    public static function uploadedFileRemove($name)
+    {
+        \Storage::delete('uploads/'.$name);
+    }
+
+    public static function uploadedFilePath($name)
+    {
+        return storage_path('uploads/'.$name);
+    }
+
+    public static function uploadedFileUrl($name)
+    {
+        return \Storage::url('uploads/'.$name);
+    }
+
+    public static function addSessionError($text, $key = 'default')
+    {
+        $errors = \Session::get('errors', new \Illuminate\Support\ViewErrorBag);
+
+        if (! $errors instanceof \Illuminate\Support\ViewErrorBag) {
+            $errors = new \Illuminate\Support\ViewErrorBag;
+        }
+
+        $message_bag = new \Illuminate\Support\MessageBag;
+        $message_bag->add($key, $text);
+
+        \Session::flash(
+            'errors', $errors->put('default', $message_bag)
+        );
+    }
+
+    public static function addFloatingFlash($text, $type = 'danger', $role = '')
+    {
+        $flashes = \Session::get('flashes_floating', []);
+
+        $flashes[] = [
+            'text' => $text,
+            'type' => $type,
+            'role' => $role,
+        ];
+
+        \Session::flash('flashes_floating', $flashes);
+    }
+
+    public static function isMySql()
+    {
+        return \DB::connection()->getPDO()->getAttribute(\PDO::ATTR_DRIVER_NAME) == 'mysql';
+    }
+
+    public static function isPgSql()
+    {
+        return \DB::connection()->getPDO()->getAttribute(\PDO::ATTR_DRIVER_NAME) == 'pgsql';
+    }
+
+    public static function humanFileSize($size, $unit="")
+    {
+        if ((!$unit && $size >= 1<<30) || $unit == "GB") {
+            return number_format($size/(1<<30),2)."GB";
+        }
+        if ((!$unit && $size >= 1<<20) || $unit == "MB") {
+            return number_format($size/(1<<20),2)."MB";
+        }
+        //if ((!$unit && $size >= 1<<10) || $unit == "KB") {
+        return number_format($size/(1<<10),2)."KB";
+        // }
+        // return number_format($size)." bytes";
+    }
+
+    public static function isPrint()
+    {
+        return (bool)app('request')->input('print');
+    }
+
+    public static function isDev()
+    {
+        return config('app.env') != 'production';
+    }
+
+    public static function substrUnicode($str, $s, $l = null)
+    {
+        return join("", array_slice(preg_split("//u", $str, -1, PREG_SPLIT_NO_EMPTY), $s, $l));
+    }
+
+    /**
+     * Disable sql_require_primary_key option to avoid errors when migrating.
+     * Only for MySQL.
+     */
+    public static function disableSqlRequirePrimaryKey()
+    {
+        if (!self::isMySql()) {
+            return;
+        }
+        try {
+            \DB::statement('SET SESSION sql_require_primary_key=0');
+        } catch (\Exception $e) {
+            // General error: 1193 Unknown system variable 'sql_require_primary_key'.
+            // Do nothing.
+        }
+    }
+
+    public static function downloadRemoteFileAsTmp($uri)
+    {
+        try {
+            $headers = get_headers($uri);
+
+            if (!preg_match("/200/", $headers[0])) {
+                return false;
+            }
+
+            $contents = file_get_contents($uri);
+
+            if (!$contents) {
+                return false;
+            }
+
+            $temp_file = tempnam(sys_get_temp_dir(), 'fs');
+
+            \File::put($temp_file, $contents);
+
+            return $temp_file;
+
+        } catch (\Exception $e) {
+
+            \Helper::logException($e, 'Error downloading a remote file ('.$uri.'): ');
+
+            return false;
+        }
+    }
+
+    public static function downloadRemoteFileAsTmpFile($uri)
+    {
+        $file_path = self::downloadRemoteFileAsTmp($uri);
+        if ($file_path) {
+            return new \Illuminate\Http\UploadedFile(
+                $file_path, basename($file_path),
+                null, null, true
+            );
+        } else {
+            return null;
+        }
+    }
+
+    public static function sanitizeUploadedFileName($file_name)
+    {
+        // Check extension.
+        $extension = pathinfo($file_name, PATHINFO_EXTENSION);
+        if (preg_match('/('.implode('|', self::$restricted_extensions).')/', strtolower($extension))) {
+            // Add underscore to the extension if file has restricted extension.
+            $file_name = $file_name.'_';
+        }
+
+        return $file_name;
+    }
+
+    public static function remoteFileName($file_url)
+    {
+        return preg_replace("/\?.*/", '', basename($file_url));
+    }
+
+    public static function binaryDataMimeType($data)
+    {
+        $finfo = new \finfo(FILEINFO_MIME_TYPE);
+        return $finfo->buffer($data);
+    }
+
+    /**
+     * https://php.watch/versions/8.0/deprecated-reflectionparameter-methods
+     */
+    public static function getClass($param)
+    {
+        return $param->getType() && !$param->getType()->isBuiltin() ? new \ReflectionClass(method_exists($param->getType(), 'getName') ? $param->getType()->getName() : $param->getClass()->name) : null;
+    }
+
+    /**
+     * https://php.watch/versions/8.0/deprecated-reflectionparameter-methods
+     */
+    public static function getClassName($param)
+    {
+        return $param->getType() && !$param->getType()->isBuiltin() ? method_exists($param->getType(), 'getName') ? $param->getType()->getName() : $param->getClass()->name : null;
+    }
+
+    public static function getWebCronHash()
+    {
+        return md5(config('app.key').'web_cron_hash');
+    }
+
+    public static function fixProtocol($url)
+    {
+        if (parse_url(config('app.url'), PHP_URL_SCHEME) == 'http' && parse_url($url, PHP_URL_SCHEME) != 'http') {
+            return str_replace('https://', 'http://', $url);
+        }
+
+        if (parse_url(config('app.url'), PHP_URL_SCHEME) == 'https' && parse_url($url, PHP_URL_SCHEME) != 'https') {
+            return str_replace('http://', 'https://', $url);
+        }
+
+        return $url;
+    }
+
+    /**
+     * Fix and parse date to Carbon.
+     */
+    public static function parseDateToCarbon($date)
+    {
+        if (preg_match('/\+0580/', $date)) {
+            $date = str_replace('+0580', '+0530', $date);
+        }
+        $date = trim(rtrim($date));
+        $date = preg_replace('/[<>]/', '', $date);
+        $date = str_replace('_', ' ', $date);
+        try {
+            return Carbon::parse($date);
+        } catch (\Exception $e) {
+            switch (true) {
+                case preg_match('/([0-9]{1,2}\ [A-Z]{2,3}\ [0-9]{4}\ [0-9]{1,2}\:[0-9]{1,2}\:[0-9]{1,2}\ UT)+$/i', $date) > 0:
+                case preg_match('/([A-Z]{2,3}\,\ [0-9]{1,2}\ [A-Z]{2,3}\ [0-9]{4}\ [0-9]{1,2}\:[0-9]{1,2}\:[0-9]{1,2}\ UT)+$/i', $date) > 0:
+                    $date .= 'C';
+                    break;
+                case preg_match('/([A-Z]{2,3}[\,|\ \,]\ [0-9]{1,2}\ [A-Z]{2,3}\ [0-9]{4}\ [0-9]{1,2}\:[0-9]{1,2}\:[0-9]{1,2}.*)+$/i', $date) > 0:
+                case preg_match('/([A-Z]{2,3}\,\ [0-9]{1,2}\ [A-Z]{2,3}\ [0-9]{4}\ [0-9]{1,2}\:[0-9]{1,2}\:[0-9]{1,2}\ [\-|\+][0-9]{4}\ \(.*)\)+$/i', $date) > 0:
+                case preg_match('/([A-Z]{2,3}\, \ [0-9]{1,2}\ [A-Z]{2,3}\ [0-9]{4}\ [0-9]{1,2}\:[0-9]{1,2}\:[0-9]{1,2}\ [\-|\+][0-9]{4}\ \(.*)\)+$/i', $date) > 0:
+                case preg_match('/([0-9]{1,2}\ [A-Z]{2,3}\ [0-9]{2,4}\ [0-9]{2}\:[0-9]{2}\:[0-9]{2}\ [A-Z]{2}\ \-[0-9]{2}\:[0-9]{2}\ \([A-Z]{2,3}\ \-[0-9]{2}:[0-9]{2}\))+$/i', $date) > 0:
+                    $array = explode('(', $date);
+                    $array = array_reverse($array);
+                    $date = trim(array_pop($array));
+                    break;
+            }
+            try {
+                return Carbon::parse($date);
+            } catch (\Exception $_e) {
+                return Carbon::now();
+            }
+        }
+
+        return null;
+    }
+
+    public static function urlHome()
+    {
+        return \Config::get('app.url');
+        // $url = rtrim($url, "/");
+        // return $url.'/home';
+    }
+
+    /**
+     * Request::url() may return URL with incorrect protocol.
+     * Use \Request::getRequestUri() instead.
+     */
+    /*public static function currentUrl()
+    {
+        $url = \Request::urlFull();
+        if (\Str::startsWith(config('app.url'), 'http://') && !\Str::startsWith($url, 'http://')) {
+            $url = str_replace('https://', 'http://', $url);
+        }
+        if (\Str::startsWith(config('app.url'), 'https://') && !\Str::startsWith($url, 'https://')) {
+            $url = str_replace('http://', 'https://', $url);
+        }
+        return $url;
+    }*/
+
+    public static function isLocaleRtl(): bool
+    {
+        return in_array(app()->getLocale(), config("app.locales_rtl"));
     }
 }

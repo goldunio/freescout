@@ -27,7 +27,7 @@
 			<td>
 				<table class="content" width="100%" border="0" cellspacing="0" cellpadding="0">
 				    <tr>
-				        <td height="45" valign="bottom"><p align="center" style="font-family:Arial, 'Helvetica Neue', Helvetica, Tahoma, sans-serif; font-size:12px; color:#B5B9BD; line-height:16px; margin:0;">{{ App\Misc\Mail::REPLY_SEPARATOR_TEXT }}</p></td>
+				        <td height="45" valign="bottom"><p align="center" style="font-family:Arial, 'Helvetica Neue', Helvetica, Tahoma, sans-serif; font-size:12px; color:#B5B9BD; line-height:16px; margin:0;">{{ $mailbox->getReplySeparator() }}</p></td>
 				    </tr>
 				    <tr>
 				        <td height="12"></td>
@@ -65,7 +65,7 @@
 							            		{{ __('Received a new conversation') }}
 							            	@else
 								            	@if ($thread->action_type == App\Thread::ACTION_TYPE_STATUS_CHANGED)
-			                                        {!! __(":person marked as :status conversation". ['person' => '<strong>'.$thread->getCreatedBy()->getFullName(true).'</strong>', 'status' => $thread->getStatusName()]) !!}
+			                                        {!! __(":person marked as :status conversation", ['person' => '<strong>'.$thread->getCreatedBy()->getFullName(true).'</strong>', 'status' => $thread->getStatusName()]) !!}
 			                                    @elseif ($thread->action_type == App\Thread::ACTION_TYPE_USER_CHANGED)
 				                                    <strong>@include('emails/user/thread_by')</strong>  
 													{{ __("assigned to :person conversation", ['person' => $thread->getAssigneeName(false, $user)]) }}
@@ -123,8 +123,7 @@
 													<tr>
 														<td valign="top">
 															<div style="disdivlay:inline; font-family:Arial, 'Helvetica Neue', Helvetica, Tahoma, sans-serif; color:#b5b9bd; font-size:12px; line-height:16px; margin:0;">
-																@include('emails/user/thread_by')  
-																{!! $thread->getActionText('', true, false, $user) !!}
+																{!! $thread->getActionText('', true, false, $user, htmlspecialchars(view('emails/user/thread_by', ['thread' => $thread, 'user' => $user])->render())) !!}
 															</div>
 														</td>
 														<td valign="top">
@@ -181,11 +180,6 @@
 																@endif
 															</h3>
 
-															{{--@if ($thread->type != App\Thread::TYPE_NOTE)
-																<p style="display:inline; font-family:Arial, 'Helvetica Neue', Helvetica, Tahoma, sans-serif; color:#B5B9BD; font-size:11.5px; line-height:18px; margin:0;">
-															    	@if ($thread->user_id){{ __('Assigned:') }} {{ $thread->getAssigneeName(true, $user) }} &nbsp;&nbsp;&nbsp; @endif{{ __('Status:') }} {{ $thread->getStatusName() }}<br>
-															    </p>
-															@endif--}}
 									                    </td>
 									                    <td valign="top">
 									                        <div style="font-family:Arial, 'Helvetica Neue', Helvetica, Tahoma, sans-serif; color:#B5B9BD; font-size:12px; line-height:18px; margin:0;" align="right">{{ App\User::dateFormat($thread->created_at, 'M j, H:i', $user) }}</div>
@@ -204,6 +198,7 @@
 							                                        ]) !!}
 							                                    </div>
 							                                @endif
+							                                @action('email_notification.before_body', $thread, $user, $conversation)
 									                        <div style="font-family:Arial, 'Helvetica Neue', Helvetica, Tahoma, sans-serif; color:#444; font-size:14px; line-height:20px; margin:0;">
 																{!! $thread->body !!}
 															</div>
@@ -260,7 +255,7 @@
 		<tr>
 			<td height="0" style="font-size: 0px; line-height: 0px; color:#ffffff;">	                    	
 				{{-- Addition to Message-ID header to detect relies --}}
-				<div style="font-size: 0px; line-height: 0px; color:#ffffff !important; display:none;">{{ \MailHelper::getMessageMarker($headers['Message-ID']) }}</div>
+				<div style="font-size: 0px; line-height: 0px; color:#ffffff !important;">{{ \MailHelper::getMessageMarker($headers['Message-ID']) }}</div>
 			</td>
 		</tr>
 	</table>

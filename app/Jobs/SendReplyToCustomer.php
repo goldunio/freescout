@@ -11,13 +11,14 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Mail;
+use Webklex\IMAP\Client;
 
 class SendReplyToCustomer implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     // Number of retries + 1
-    public $tries = 6;
+    public $tries = 168; // one per hour
 
     public $conversation;
 
@@ -50,6 +51,9 @@ class SendReplyToCustomer implements ShouldQueue
      */
     public function handle()
     {
+        $send_previous_messages = false;
+        $is_forward = false;
+
         // When forwarding conversation is undone, new conversation is deleted.
         if (!$this->conversation) {
             return;
@@ -57,11 +61,16 @@ class SendReplyToCustomer implements ShouldQueue
 
         $mailbox = $this->conversation->mailbox;
 
+        // Mailbox may be deleted.
+        if (!$mailbox) {
+            return;
+        }
+
         // Add forwarded conversation replies.
         if ($this->conversation->threads_count == 1 && count($this->threads) == 1) {
             $forward_child_thread = $this->threads[0];
             if ($forward_child_thread->isForwarded() && $forward_child_thread->getForwardParentConversation()) {
-                
+
                 // Add replies from original conversation.
                 $forwarded_replies = $forward_child_thread->getForwardParentConversation()->getReplies();
                 $forwarded_replies = $forwarded_replies->sortByDesc(function ($item, $key) {
@@ -77,49 +86,96 @@ class SendReplyToCustomer implements ShouldQueue
                         }
                     }
                     $this->threads = $this->threads->merge($forwarded_replies);
+                    $is_forward = true;
                 }
             }
         }
 
         // Threads has to be sorted here, if sorted before, they come here in wrong order
         $this->threads = $this->threads->sortByDesc(function ($item, $key) {
-            return $item->created_at;
+            return $item->id;
         });
 
         $new = false;
         $headers = [];
         $this->last_thread = $this->threads->first();
-        $prev_thread = null;
+        if ($this->last_thread === null) {
+            return;
+        }
+        $last_customer_thread = null;
 
         // If thread is draft, it means it has been undone
         if ($this->last_thread->isDraft()) {
             return;
         }
 
-        // Configure mail driver according to Mailbox settings
-        \App\Misc\Mail::setMailDriver($mailbox, $this->last_thread->created_by_user);
-
         if (count($this->threads) == 1) {
             $new = true;
         }
-        $i = 0;
-        foreach ($this->threads as $thread) {
-            if ($i == 1) {
-                $prev_thread = $thread;
-                break;
+        if (!$new) {
+            $i = 0;
+            foreach ($this->threads as $thread) {
+                if ($i > 0 && $thread->type == Thread::TYPE_CUSTOMER) {
+                    $last_customer_thread = $thread;
+                    break;
+                }
+                $i++;
             }
-            $i++;
         }
 
-        // Get penultimate email Message-Id if reply
-        if (!$new && !empty($prev_thread) && $prev_thread->message_id) {
-            $headers['In-Reply-To'] = '<'.$prev_thread->message_id.'>';
-            $headers['References'] = '<'.$prev_thread->message_id.'>';
+        // Conversation history.
+        $email_conv_history = config('app.email_conv_history');
+
+        $meta_conv_history = $this->last_thread->getMeta(Thread::META_CONVERSATION_HISTORY);
+        if (!empty($meta_conv_history)) {
+            $email_conv_history = $meta_conv_history;
         }
+
+        if ($is_forward && $email_conv_history == 'global') {
+            $email_conv_history = 'full';
+        }
+
+        if ($is_forward && $email_conv_history == 'none') {
+            $email_conv_history = 'full';
+        }
+
+        if ($email_conv_history == 'full') {
+            $send_previous_messages = true;
+        }
+
+        if ($email_conv_history == 'last') {
+            $send_previous_messages = true;
+            $this->threads = $this->threads->slice(0, 2);
+        }
+
+        if ($email_conv_history == 'none') {
+            $send_previous_messages = false;
+        }
+
+        if (!$is_forward) {
+            $send_previous_messages = \Eventy::filter('jobs.send_reply_to_customer.send_previous_messages', $send_previous_messages, $this->last_thread, $this->threads, $this->conversation, $this->customer);
+        }
+
+        // Remove previous messages.
+        if (!$send_previous_messages) {
+            $this->threads = $this->threads->slice(0, 1);
+        }
+
+        // Configure mail driver according to Mailbox settings
+        \App\Misc\Mail::setMailDriver($mailbox, $this->last_thread->created_by_user, $this->conversation);
+
+        // Get penultimate email Message-Id if reply
+        if (!$new && !empty($last_customer_thread) && $last_customer_thread->message_id) {
+
+            $headers['In-Reply-To'] = '<'.$last_customer_thread->message_id.'>';
+            $headers['References'] = '<'.$last_customer_thread->message_id.'>';
+        }
+
         $this->message_id = \App\Misc\Mail::MESSAGE_ID_PREFIX_REPLY_TO_CUSTOMER.'-'.$this->last_thread->id.'-'.md5($this->last_thread->id).'@'.$mailbox->getEmailDomain();
         $headers['Message-ID'] = $this->message_id;
 
         $this->customer_email = $this->conversation->customer_email;
+        $to_array = $mailbox->removeMailboxEmailsFromList($this->last_thread->getToArray());
         $cc_array = $mailbox->removeMailboxEmailsFromList($this->last_thread->getCcArray());
         $bcc_array = $mailbox->removeMailboxEmailsFromList($this->last_thread->getBccArray());
 
@@ -140,7 +196,14 @@ class SendReplyToCustomer implements ShouldQueue
             $bcc_array = \App\Misc\Mail::removeEmailFromArray($bcc_array, $cc_email);
         }
 
-        $this->recipients = array_merge([$this->customer_email], $cc_array, $bcc_array);
+        $this->recipients = array_merge($to_array, $cc_array, $bcc_array);
+
+        $to = [];
+        if (count($to_array) > 1) {
+            $to = $to_array;
+        } else {
+            $to = [['name' => $this->customer->getFullName(), 'email' => $this->customer_email]];
+        }
 
         // If sending fails, all recipiens fail.
         // if ($this->attempts() > 1) {
@@ -148,43 +211,96 @@ class SendReplyToCustomer implements ShouldQueue
         //     $bcc_array = [];
         // }
 
+        $headers['X-FreeScout-Mail-Type'] = 'customer.message';
+
+        $reply_mail = new ReplyToCustomer($this->conversation, $this->threads, $headers, $mailbox);
+
         try {
-            Mail::to([['name' => $this->customer->getFullName(), 'email' => $this->customer_email]])
+            Mail::to($to)
                 ->cc($cc_array)
                 ->bcc($bcc_array)
-                ->send(new ReplyToCustomer($this->conversation, $this->threads, $headers, $mailbox));
+                ->send($reply_mail);
         } catch (\Exception $e) {
             // We come here in case SMTP server unavailable for example
-            activity()
-                ->causedBy($this->customer)
-                ->withProperties([
-                    'error'    => $e->getMessage().'; File: '.$e->getFile().' ('.$e->getLine().')',
-                 ])
-                ->useLog(\App\ActivityLog::NAME_EMAILS_SENDING)
-                ->log(\App\ActivityLog::DESCRIPTION_EMAILS_SENDING_ERROR_TO_CUSTOMER);
+            if ($this->attempts() == 1) {
+                activity()
+                    ->causedBy($this->customer)
+                    ->withProperties([
+                        'error'    => $e->getMessage().'; File: '.$e->getFile().' ('.$e->getLine().')',
+                     ])
+                    ->useLog(\App\ActivityLog::NAME_EMAILS_SENDING)
+                    ->log(\App\ActivityLog::DESCRIPTION_EMAILS_SENDING_ERROR_TO_CUSTOMER);
+            }
 
             // Failures will be saved to send log when retry attempts will finish
             // Mail::failures() is empty in case of connection error.
             $this->failures = $this->recipients;
 
-            // Save to send log
-            $this->saveToSendLog($e->getMessage());
+            // Save to send log (only first attempt).
+            if ($this->attempts() == 1) {
+                $this->saveToSendLog($e->getMessage());
+            }
+
+            $error_message = $e->getMessage();
 
             // Retry job with delay.
             // https://stackoverflow.com/questions/35258175/how-can-i-create-delays-between-failed-queued-job-attempts-in-laravel
-            if ($this->attempts() < $this->tries) {
-                $this->release(3600);
+            if ($this->attempts() < $this->tries && !preg_match("/".config("app.no_retry_mail_errors")."/i", $error_message)) {
+                if ($this->attempts() == 1) {
+                    // Second attempt after 5 min.
+                    $this->release(300);
+                } else {
+                    // Others - after 1 hour.
+                    $this->release(3600);
+                }
 
                 throw $e;
             } else {
                 $this->last_thread->send_status = SendLog::STATUS_SEND_ERROR;
-                $this->last_thread->updateSendStatusData(['msg' => $e->getMessage()]);
+                $this->last_thread->updateSendStatusData(['msg' => $error_message]);
                 $this->last_thread->save();
 
                 // This executes $this->failed().
                 $this->fail($e);
 
                 return;
+            }
+        }
+
+        $imap_sent_folder = $mailbox->imap_sent_folder;
+        if ($imap_sent_folder) {
+            try {
+                $client = \MailHelper::getMailboxClient($mailbox);
+                $client->connect();
+
+                $envelope['from'] = $mailbox->getMailFrom(null, $this->conversation)['address'];
+                $envelope['to'] = $this->customer_email;
+                $envelope['subject'] = 'Re: ' . $this->conversation->subject;
+
+                // Get penultimate email Message-Id if reply
+                if (!$new && !empty($last_customer_thread) && $last_customer_thread->message_id) {
+                    $envelope['custom_headers'] = [
+                        'In-Reply-To: <'.$last_customer_thread->message_id.'>',
+                        'References: <'.$last_customer_thread->message_id.'>'
+                    ];
+                }
+
+                $part1['type'] = TYPETEXT;
+                $part1['subtype'] = 'html';
+                $part1['contents.data'] = $reply_mail->render();
+
+                try {
+                    $folder = $client->getFolder($imap_sent_folder);
+                    $folder->appendMessage(imap_mail_compose($envelope, [$part1]), '\Seen', now()->format('d-M-Y H:i:s O'));
+                } catch (\Exception $e) {
+                    // Just log error and continue.
+                    \Helper::logException($e, 'Could not save outgoing reply to the IMAP folder, IMAP folder not found: '.$imap_sent_folder.' - ');
+                    //$this->saveToSendLog('['.date('Y-m-d H:i:s').'] Could not save outgoing reply to the IMAP folder: '.$imap_sent_folder);
+                }
+            } catch (\Exception $e) {
+                // Just log error and continue.
+                //$this->saveToSendLog('['.date('Y-m-d H:i:s').'] Could not get mailbox IMAP folder: '.$imap_sent_folder);
+                \Helper::logException($e, 'Could not save outgoing reply to the IMAP folder: '.$imap_sent_folder.' - ');
             }
         }
 

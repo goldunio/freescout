@@ -11,7 +11,7 @@
 
 @section('content')
 
-    <div class="section-heading-noborder">
+    <div class="section-heading margin-bottom">
         {{ __('Connection Settings') }}
     </div>
 
@@ -30,6 +30,20 @@
                     </div>
 
                     <div class="form-group margin-top">
+                        <label for="email" class="col-sm-2 control-label">{{ __('Status') }}</label>
+
+                        <div class="col-sm-6">
+                            <label class="control-label">
+                                @if ($mailbox->isInActive())
+                                    <span class="text-success"><i class="glyphicon glyphicon-ok"></i> {{ __('Active') }}</span>
+                                @else
+                                    <span class="text-warning"><i class="glyphicon glyphicon-ok"></i> {{ __('Inactive') }}</span>
+                                @endif
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
                         <label for="email" class="col-sm-2 control-label">{{ __('Fetch From') }}</label>
 
                         <div class="col-sm-6 flexy">
@@ -44,8 +58,9 @@
                         <div class="col-sm-6">
                             <div class="flexy">
                                 <select id="in_protocol" class="form-control input-sized" name="in_protocol" required autofocus>
-                                    <option value="{{ App\Mailbox::IN_PROTOCOL_IMAP }}" @if (old('in_protocol', $mailbox->in_protocol) == App\Mailbox::IN_PROTOCOL_IMAP)selected="selected"@endif>IMAP</option>
-                                    <option value="{{ App\Mailbox::IN_PROTOCOL_POP3 }}" @if (old('in_protocol', $mailbox->in_protocol) == App\Mailbox::IN_PROTOCOL_POP3)selected="selected"@endif>POP3</option>
+                                    @foreach($mailbox->getInProtocolDisplayNames() as $id => $name)
+                                        <option value="{{$id}}" @if (old('in_protocol', $mailbox->in_protocol) == $id)selected="selected"@endif>{{$name}}</option>
+                                    @endforeach
                                 </select>
                             </div>
 
@@ -53,97 +68,123 @@
                         </div>
                     </div>
 
-                    <div class="form-group{{ $errors->has('in_server') ? ' has-error' : '' }}">
-                        <label for="in_server" class="col-sm-2 control-label">{{ __('Server') }}</label>
+                    <div data-in-protocol="default">
+                        <div class="form-group{{ $errors->has('in_server') ? ' has-error' : '' }}">
+                            <label for="in_server" class="col-sm-2 control-label">{{ __('Server') }}</label>
 
-                        <div class="col-sm-6">
-                            <input id="in_server" type="text" class="form-control input-sized" name="in_server" value="{{ old('in_server', $mailbox->in_server) }}" maxlength="255" required autofocus>
+                            <div class="col-sm-6">
+                                <input id="in_server" type="text" class="form-control input-sized" name="in_server" value="{{ old('in_server', $mailbox->in_server) }}" maxlength="255">
 
-                            @include('partials/field_error', ['field'=>'in_server'])
+                                {{--@include('partials/field_error', ['field'=>'in_server'])--}}
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="form-group{{ $errors->has('in_port') ? ' has-error' : '' }}">
-                        <label for="in_port" class="col-sm-2 control-label">{{ __('Port') }}</label>
+                        <div class="form-group{{ $errors->has('in_port') ? ' has-error' : '' }}">
+                            <label for="in_port" class="col-sm-2 control-label">{{ __('Port') }}</label>
 
-                        <div class="col-sm-6">
-                            <input id="in_port" type="number" class="form-control input-sized" name="in_port" value="{{ old('in_port', $mailbox->in_port) }}" maxlength="5" required autofocus>
+                            <div class="col-sm-6">
+                                <input id="in_port" type="number" class="form-control input-sized" name="in_port" value="{{ old('in_port', $mailbox->in_port) }}" maxlength="5" required autofocus>
 
-                            @include('partials/field_error', ['field'=>'in_port'])
+                                {{--@include('partials/field_error', ['field'=>'in_port'])--}}
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="form-group{{ $errors->has('in_username') ? ' has-error' : '' }}">
-                        <label for="in_username" class="col-sm-2 control-label">{{ __('Username') }}</label>
+                        <div class="form-group{{ $errors->has('in_username') ? ' has-error' : '' }}">
+                            <label for="in_username" class="col-sm-2 control-label">{{ __('Username') }}</label>
 
-                        <div class="col-sm-6">
-                            <input id="in_username" type="text" class="form-control input-sized" name="in_username" value="{{ old('in_username', $mailbox->in_username) }}" maxlength="100" required autofocus {{-- This added to prevent autocomplete in Chrome --}}autocomplete="new-password">
+                            <div class="col-sm-6">
+                                <input id="in_username" type="text" class="form-control input-sized @if ($mailbox->oauthEnabled()) disabled @endif" name="in_username" value="{{ old('in_username', $mailbox->in_username) }}" maxlength="100" {{-- This added to prevent autocomplete in Chrome --}}autocomplete="new-password" @if ($mailbox->oauthEnabled()) readonly @endif >
 
-                            @include('partials/field_error', ['field'=>'in_username'])
+                                {{--@include('partials/field_error', ['field'=>'in_username'])--}}
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="form-group{{ $errors->has('in_password') ? ' has-error' : '' }}">
-                        <label for="in_password" class="col-sm-2 control-label">{{ __('Password') }}</label>
+                        <div class="form-group{{ $errors->has('in_password') ? ' has-error' : '' }}">
+                            <label for="in_password" class="col-sm-2 control-label">{{ __('Password') }}</label>
 
-                        <div class="col-sm-6">
-                            <input id="in_password" type="password" class="form-control input-sized" name="in_password" value="{{ old('in_password', $mailbox->inPasswordSafe()) }}" maxlength="255" required autofocus {{-- This added to prevent autocomplete in Chrome --}}autocomplete="new-password">
+                            <div class="col-sm-6">
+                                <input id="in_password" type="password" class="form-control input-sized @if ($mailbox->oauthEnabled()) disabled @endif" name="in_password" value="{{ old('in_password', $mailbox->inPasswordSafe()) }}" maxlength="255" {{-- This added to prevent autocomplete in Chrome --}}autocomplete="new-password" @if ($mailbox->oauthEnabled()) readonly @endif>
 
-                            @include('partials/field_error', ['field'=>'in_password'])
+                                <p class="form-help">
+                                    <small @if ($mailbox->oauthGetParam('provider') == \MailHelper::OAUTH_PROVIDER_MICROSOFT) class="text-success" @endif>Microsoft Exchange</small> 
+                                    @if (!$mailbox->oauthEnabled())
+                                        @if ($mailbox->in_username && $mailbox->in_password && !strstr($mailbox->in_username, '@'))
+                                             – <a href="{{ route('mailboxes.oauth', ['id' => $mailbox->id, 'provider' => \MailHelper::OAUTH_PROVIDER_MICROSOFT]) }}" target="_blank">{{ __('Connect') }}</a>
+                                        @endif
+                                    @elseif ($mailbox->oauthGetParam('provider') == \MailHelper::OAUTH_PROVIDER_MICROSOFT)
+                                         – <a href="{{ route('mailboxes.oauth_disconnect', ['id' => $mailbox->id, 'provider' => \MailHelper::OAUTH_PROVIDER_MICROSOFT]) }}">{{ __('Disconnect') }}</a>
+                                    @endif
+                                    <small>(<a href="https://github.com/freescout-helpdesk/freescout/wiki/Connect-FreeScout-to-Microsoft-365-Exchange-via-oAuth" target="_blank">{{ __('Help') }}</a>)</small>
+                                </p>
+                                {{--@include('partials/field_error', ['field'=>'in_password'])--}}
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="form-group{{ $errors->has('in_encryption') ? ' has-error' : '' }}">
-                        <label for="in_encryption" class="col-sm-2 control-label">{{ __('Encryption') }}</label>
+                        <div class="form-group{{ $errors->has('in_encryption') ? ' has-error' : '' }}">
+                            <label for="in_encryption" class="col-sm-2 control-label">{{ __('Encryption') }}</label>
 
-                        <div class="col-sm-6">
-                            <select id="in_encryption" class="form-control input-sized" name="in_encryption" @if ($mailbox->out_method == App\Mailbox::OUT_METHOD_SMTP) required @endif autofocus>
-                                <option value="{{ App\Mailbox::IN_ENCRYPTION_NONE }}" @if (old('in_encryption', $mailbox->in_encryption) == App\Mailbox::IN_ENCRYPTION_NONE)selected="selected"@endif>{{ __('None') }}</option>
-                                <option value="{{ App\Mailbox::IN_ENCRYPTION_SSL }}" @if (old('in_encryption', $mailbox->in_encryption) == App\Mailbox::IN_ENCRYPTION_SSL)selected="selected"@endif>{{ __('SSL') }}</option>
-                                <option value="{{ App\Mailbox::IN_ENCRYPTION_TLS }}" @if (old('in_encryption', $mailbox->in_encryption) == App\Mailbox::IN_ENCRYPTION_TLS)selected="selected"@endif>{{ __('TLS') }}</option>
-                            </select>
+                            <div class="col-sm-6">
+                                <select id="in_encryption" class="form-control input-sized" name="in_encryption" @if ($mailbox->out_method == App\Mailbox::OUT_METHOD_SMTP) required @endif autofocus>
+                                    <option value="{{ App\Mailbox::IN_ENCRYPTION_NONE }}" @if (old('in_encryption', $mailbox->in_encryption) == App\Mailbox::IN_ENCRYPTION_NONE)selected="selected"@endif>{{ __('None') }}</option>
+                                    <option value="{{ App\Mailbox::IN_ENCRYPTION_SSL }}" @if (old('in_encryption', $mailbox->in_encryption) == App\Mailbox::IN_ENCRYPTION_SSL)selected="selected"@endif>SSL</option>
+                                    <option value="{{ App\Mailbox::IN_ENCRYPTION_TLS }}" @if (old('in_encryption', $mailbox->in_encryption) == App\Mailbox::IN_ENCRYPTION_TLS)selected="selected"@endif>TLS</option>
+                                </select>
 
-                            @include('partials/field_error', ['field'=>'in_encryption'])
+                                @include('partials/field_error', ['field'=>'in_encryption'])
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="form-group{{ $errors->has('in_server') ? ' has-error' : '' }}">
-                        <label for="in_imap_folders" class="col-sm-2 control-label">{{ __('IMAP Folders') }}</label>
+                        <div class="form-group{{ $errors->has('in_imap_folders') ? ' has-error' : '' }}">
+                            <label for="in_imap_folders" class="col-sm-2 control-label">{{ __('IMAP Folders') }}</label>
 
-                        <div class="col-sm-6 flexy">
-                            <select id="in_imap_folders" class="form-control input-sized" name="in_imap_folders[]" multiple>
-                                <option value="INBOX" selected="selected">INBOX</option>
-                                @foreach ($mailbox->getInImapFolders() as $imap_folder)
-                                    <option value="{{ $imap_folder }}" selected="selected">{{ $imap_folder }}</option>
-                                @endforeach
-                            </select>
+                            <div class="col-sm-6 flexy">
+                                <select id="in_imap_folders" class="form-control input-sized" name="in_imap_folders[]" multiple>
+                                    @foreach ($mailbox->getInImapFolders() as $imap_folder)
+                                        <option value="{{ $imap_folder }}" selected="selected">{{ $imap_folder }}</option>
+                                    @endforeach
+                                </select>
 
-                            <a href="#" class="btn btn-link btn-sm" data-toggle="tooltip" title="{{ __('Retrieve a list of available IMAP folders from the server') }}" id="retrieve-imap-folders" data-loading-text="{{ __('Retrieving') }}…">{{ __('Get folders') }}</a>
+                                <a href="#" class="btn btn-link btn-sm" data-toggle="tooltip" title="{{ __('Retrieve a list of available IMAP folders from the server') }}" id="retrieve-imap-folders" data-loading-text="{{ __('Retrieving') }}…">{{ __('Get folders') }}</a>
 
-                            @include('partials/field_error', ['field'=>'in_imap_folders'])
+                                @include('partials/field_error', ['field'=>'in_imap_folders'])
+                            </div>
                         </div>
-                    </div>
 
-                    <div class="form-group{{ $errors->has('in_validate_cert') ? ' has-error' : '' }}">
-                        <label for="in_validate_cert" class="col-sm-2 control-label">{{ __('Validate Certificate') }}</label>
+                        <div class="form-group{{ $errors->has('in_validate_cert') ? ' has-error' : '' }}">
+                            <label for="in_validate_cert" class="col-sm-2 control-label">{{ __('Validate Certificate') }}</label>
 
-                        <div class="col-sm-6">
-                            <div class="controls">
-                                <div class="onoffswitch-wrap">
-                                    <div class="onoffswitch">
-                                        <input type="checkbox" name="in_validate_cert" value="1" id="in_validate_cert" class="onoffswitch-checkbox" @if (old('in_validate_cert', $mailbox->in_validate_cert))checked="checked"@endif >
-                                        <label class="onoffswitch-label" for="in_validate_cert"></label>
+                            <div class="col-sm-6">
+                                <div class="controls">
+                                    <div class="onoffswitch-wrap">
+                                        <div class="onoffswitch">
+                                            <input type="checkbox" name="in_validate_cert" value="1" id="in_validate_cert" class="onoffswitch-checkbox" @if (old('in_validate_cert', $mailbox->in_validate_cert))checked="checked"@endif >
+                                            <label class="onoffswitch-label" for="in_validate_cert"></label>
+                                        </div>
+
+                                        <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-placement="top" data-content="{{ __('Disable certificate validation if receiving "Certificate failure" error.') }}"></i>
                                     </div>
+                                </div>
 
-                                    <i class="glyphicon glyphicon-info-sign icon-info icon-info-inline" data-toggle="popover" data-trigger="hover" data-placement="top" data-content="{{ __('Disable certificate validation if receiving "Certificate failure" error.') }}"></i>
+                                @include('partials/field_error', ['field'=>'in_validate_cert'])
+
+                                <div class="form-help">{!! __("Make sure to save settings before checking connection.") !!}</div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div class="form-group">
+                                <label for="imap_sent_folder" class="col-sm-2 control-label">{{ __('IMAP Folder To Save Outgoing Replies') }}</label>
+
+                                <div class="col-sm-6">
+                                    <input id="imap_sent_folder" type="text" class="form-control input-sized" name="imap_sent_folder" value="{{ old('imap_sent_folder', $mailbox->imap_sent_folder) }}" maxlength="255" placeholder="Sent">
+                                    <div class="form-help">{!! __("Enter IMAP folder name to save outgoing replies if your mail service provider does not do it automatically (Gmail does it), otherwise leave it blank.") !!}</div>
                                 </div>
                             </div>
-
-                            @include('partials/field_error', ['field'=>'in_validate_cert'])
-
-                            <div class="form-help">{!! __("Make sure to save settings before checking connection.") !!}</div>
+                            <hr/>
                         </div>
                     </div>
+
+                    @action('mailbox.connection_incoming.after_default_settings', $mailbox)
 
                     <div class="form-group margin-top-2">
                         <div class="col-sm-6 col-sm-offset-2">

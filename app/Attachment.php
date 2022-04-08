@@ -19,6 +19,8 @@ class Attachment extends Model
 
     const DIRECTORY = 'attachment';
 
+    CONST DISK = 'private';
+
     // https://github.com/Webklex/laravel-imap/blob/master/src/IMAP/Attachment.php
     public static $types = [
         'message'     => self::TYPE_MESSAGE,
@@ -32,13 +34,8 @@ class Attachment extends Model
         'other'       => self::TYPE_OTHER,
     ];
 
-    /**
-     * Files with such extensions are being renamed on upload.
-     */
-    public static $restricted_extensions = [
-        'php.*',
-        'sh',
-        'pl',
+    public static $type_extensions = [
+        self::TYPE_VIDEO => ['flv', 'mp4', 'm3u8', 'ts', '3gp', 'mov', 'avi', 'wmv']
     ];
 
     public $timestamps = false;
@@ -60,19 +57,38 @@ class Attachment extends Model
             return false;
         }
 
-        // Check extension.
-        $extension = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
-        if (preg_match('/('.implode('|', self::$restricted_extensions).')/', $extension)) {
-            // Add underscore to the extension if file has restricted extension.
-            $file_name = $file_name.'_';
-        }
+        $orig_extension = pathinfo($file_name, PATHINFO_EXTENSION);
+
+        // Add underscore to the extension if file has restricted extension.
+        $file_name = \Helper::sanitizeUploadedFileName($file_name);
 
         // Replace some symbols in file name.
         // Gmail can not load image if it contains spaces.
-        $file_name = preg_replace('/[ #]/', '-', $file_name);
+        $file_name = preg_replace('/[ #\/]/', '-', $file_name);
+
+        if (!$file_name) {
+            if (!$orig_extension) {
+                preg_match("/.*\/([^\/]+)$/", $mime_type, $m);
+                if (!empty($m[1])) {
+                    $orig_extension = $m[1];
+                }
+            }
+            $file_name = uniqid();
+            if ($orig_extension) {
+                $file_name .= '.'.$orig_extension;
+            }
+        }
+
+        if (strlen($file_name) > 255) {
+            $without_ext = pathinfo($file_name, PATHINFO_FILENAME);
+            $extension = pathinfo($file_name, PATHINFO_EXTENSION);
+            // 125 because file name may have unicode symbols.
+            $file_name = \Helper::substrUnicode($without_ext, 0, 125-strlen($extension)-1);
+            $file_name .= '.'.$extension;
+        }
 
         if (!$type) {
-            $type = self::detectType($mime_type);
+            $type = self::detectType($mime_type, $orig_extension);
         }
 
         $attachment = new self();
@@ -84,6 +100,20 @@ class Attachment extends Model
         $attachment->embedded = $embedded;
         $attachment->save();
 
+        $file_info = self::saveFileToDisk($attachment, $file_name, $content, $uploaded_file);
+
+        $attachment->file_dir = $file_info['file_dir'];
+        $attachment->size = Storage::disk(self::DISK)->size($file_info['file_path']);
+        $attachment->save();
+
+        return $attachment;
+    }
+
+    /**
+     * Save file to the disk and return file_dir.
+     */
+    public static function saveFileToDisk($attachment, $file_name, $content, $uploaded_file)
+    {
         // Save file from content or copy file.
         // We have to keep file name as is, so if file exists we create extra folder.
         // Examples: 1/2/3
@@ -93,21 +123,20 @@ class Attachment extends Model
         do {
             $i++;
             $file_path = self::DIRECTORY.DIRECTORY_SEPARATOR.$file_dir.$i.DIRECTORY_SEPARATOR.$file_name;
-        } while (Storage::exists($file_path));
+        } while (Storage::disk(self::DISK)->exists($file_path));
 
         $file_dir .= $i.DIRECTORY_SEPARATOR;
 
         if ($uploaded_file) {
-            $uploaded_file->storeAs(self::DIRECTORY.DIRECTORY_SEPARATOR.$file_dir, $file_name);
+            $uploaded_file->storeAs(self::DIRECTORY.DIRECTORY_SEPARATOR.$file_dir, $file_name, ['disk' => self::DISK]);
         } else {
-            Storage::put($file_path, $content);
+            Storage::disk(self::DISK)->put($file_path, $content);
         }
 
-        $attachment->file_dir = $file_dir;
-        $attachment->size = Storage::size($file_path);
-        $attachment->save();
-
-        return $attachment;
+        return [
+            'file_dir'  => $file_dir,
+            'file_path' => $file_path,
+        ];
     }
 
     /**
@@ -149,13 +178,18 @@ class Attachment extends Model
      *
      * @return int
      */
-    public static function detectType($mime_type)
+    public static function detectType($mime_type, $extension = '')
     {
         if (preg_match("/^text\//", $mime_type)) {
             return self::TYPE_TEXT;
         } elseif (preg_match("/^message\//", $mime_type)) {
             return self::TYPE_MESSAGE;
         } elseif (preg_match("/^application\//", $mime_type)) {
+            // This is tricky mime type.
+            // For .mp4 mime type can be application/octet-stream
+            if (!empty($extension) && in_array(strtolower($extension), self::$type_extensions[self::TYPE_VIDEO])) {
+                return self::TYPE_VIDEO;
+            }
             return self::TYPE_APPLICATION;
         } elseif (preg_match("/^audio\//", $mime_type)) {
             return self::TYPE_AUDIO;
@@ -189,7 +223,40 @@ class Attachment extends Model
      */
     public function url()
     {
-        return Storage::url($this->getStorageFilePath());
+        return Storage::url($this->getStorageFilePath()).'?id='.$this->id.'&token='.$this->getToken();
+    }
+
+    /**
+     * Get hashed security token for the attachment.
+     */
+    public function getToken()
+    {
+        // \Hash::make() may contain . and / symbols which may cause problems.
+        return md5(config('app.key').$this->id.$this->size);
+    }
+
+    /**
+     * Outputs the current Attachment as download
+     */
+    public function download($view = false)
+    {
+        $headers = [];
+        // #533
+        //return $this->getDisk()->download($this->getStorageFilePath(), \Str::ascii($this->file_name));
+        if ($view) {
+            $headers['Content-Disposition'] = '';
+        }
+        $file_name = $this->file_name;
+
+        if ($file_name == "RFC822"){
+            $file_name = $file_name.'.eml';
+        }
+
+        return $this->getDisk()->download($this->getStorageFilePath(), $file_name, $headers);
+    }
+
+    private function getDisk() {
+        return Storage::disk(self::DISK);
     }
 
     /**
@@ -202,14 +269,24 @@ class Attachment extends Model
         return self::formatBytes($this->size);
     }
 
+    /**
+     * attachment/...
+     */
     public function getStorageFilePath()
     {
         return self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name;
     }
 
-    public function getLocalFilePath()
+    /**
+     * /var/html/storage/app/attachment/...
+     */
+    public function getLocalFilePath($full = true)
     {
-        return Storage::path(self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name);
+        if ($full) {
+            return $this->getDisk()->path(self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name);
+        } else {
+            return DIRECTORY_SEPARATOR.'storage'.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.self::DIRECTORY.DIRECTORY_SEPARATOR.$this->file_dir.$this->file_name;
+        }
     }
 
     public static function formatBytes($size, $precision = 0)
@@ -239,30 +316,94 @@ class Attachment extends Model
         $attachments = self::whereIn('id', $attachment_ids)->get();
 
         // Delete from disk
-        foreach ($attachments as $attachment) {
-            Storage::delete($attachment->getStorageFilePath());
-        }
-
-        // Delete from DB
-        self::whereIn('id', $attachment_ids)->delete();
+        self::deleteForever($attachments);
     }
 
     /**
-     * Generate dummy ID for attachment.
-     * Not used for now.
+     * Delete attachments by thread IDs.
      */
-    /*public static function genrateDummyId()
+    public static function deleteByThreadIds($thread_ids)
     {
-        if (!$this->id) {
-            // Math.random should be unique because of its seeding algorithm.
-            // Convert it to base 36 (numbers + letters), and grab the first 9 characters
-            // after the decimal.
-            $hash = mt_rand() / mt_getrandmax();
-            $hash = base_convert($hash, 10, 36);
-            $id = substr($hash, 2, 9);
-        } else {
-            $id = substr(md5($this->id), 0, 9);
+        if (!count($thread_ids)) {
+            return;
         }
-        return $id;
-    }*/
+        $attachments = self::whereIn('thread_id', $thread_ids)->get();
+
+        // Delete from disk
+        self::deleteForever($attachments);
+    }
+
+    public static function deleteForever($attachments)
+    {
+        // Delete from disk
+        foreach ($attachments as $attachment) {
+            $attachment->getDisk()->delete($attachment->getStorageFilePath());
+        }
+
+        // Delete from DB
+        self::whereIn('id', $attachments->pluck('id')->toArray())->delete();
+    }
+
+    /**
+     * Delete attachments and update Thread & Conversation.
+     */
+    public static function deleteAttachments($attachments)
+    {
+        if (!$attachments instanceof \Illuminate\Support\Collection) { 
+            $attachments = collect($attachments);
+        }
+
+        foreach ($attachments as $attachment) {
+            if ($attachment->thread_id && $attachment->thread
+                && count($attachment->thread->attachments) <= 1
+            ) {
+                $attachment->thread->has_attachments = false;
+                $attachment->thread->save();
+                // Update conversation.
+                $conversation = $attachment->thread->conversation;
+                foreach ($conversation->threads as $thread) {
+                    if ($thread->has_attachments) {
+                        break 2;
+                    }
+                }
+                $conversation->has_attachments = false;
+                $conversation->save();
+            }
+        }
+        Attachment::deleteForever($attachments);
+    }
+
+    /**
+     * Create a copy of the attachment and it's file.
+     */
+    public function duplicate($thread_id)
+    {
+        $new_attachment = $this->replicate();
+        $new_attachment->thread_id = $thread_id;
+
+        $new_attachment->save();
+
+        try {
+            $attachment_file = new \Illuminate\Http\UploadedFile(
+                $this->getLocalFilePath(), $this->file_name,
+                null, null, true
+            );
+
+            $file_info = Attachment::saveFileToDisk($new_attachment, $new_attachment->file_name, '', $attachment_file);
+
+            if (!empty($file_info['file_dir'])) {
+                $new_attachment->file_dir = $file_info['file_dir'];
+                $new_attachment->save();
+            }
+        } catch (\Exception $e) {
+            \Helper::logException($e);
+        }
+
+        return $new_attachment;
+    }
+
+    public function getFileContents()
+    {
+        return $this->getDisk()->get($this->getStorageFilePath());
+    }
 }

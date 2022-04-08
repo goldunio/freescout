@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\ActivityLog;
+use App\Misc\Helper;
 use App\SendLog;
 use App\Thread;
 use App\User;
@@ -27,7 +28,15 @@ class SecureController extends Controller
      */
     public function dashboard()
     {
-        $mailboxes = auth()->user()->mailboxesCanView();
+        $user = auth()->user();
+        if (!$user->isAdmin()) {
+            $mailboxes = $user->mailboxesCanView();
+        } else {
+            $mailboxes = $user->mailboxesCanViewWithSettings();
+        }
+
+        // Sort by name.
+        $mailboxes = \Eventy::filter('dashboard.mailboxes', $mailboxes->sortBy('name'));
 
         return view('secure/dashboard', ['mailboxes' => $mailboxes]);
     }
@@ -119,6 +128,9 @@ class SecureController extends Controller
                 $status = $record->getStatusName();
                 if ($record->status_message) {
                     $status .= '. '.$record->status_message;
+                    if ($record->status == SendLog::STATUS_SEND_ERROR) {
+                        $status .= '. Message-ID: '.$record->message_id;
+                    }
                 }
 
                 $logs[] = [
@@ -176,5 +188,42 @@ class SecureController extends Controller
         }
 
         return redirect()->route('logs', ['name' => $name]);
+    }
+
+    /**
+     * Upload files and images.
+     */
+    public function upload(Request $request, $allowed_exts = [])
+    {
+        // 'jpg','gif','png'
+        $response = [
+            'status' => 'error',
+            'msg'    => '', // this is error message
+        ];
+
+        $user = auth()->user();
+
+        if (!$user) {
+            $response['msg'] = __('Please login to upload file');
+        }
+
+        if (!$request->hasFile('file') || !$request->file('file')->isValid() || !$request->file) {
+            $response['msg'] = __('Error occured uploading file');
+        }
+
+        if (!$response['msg']) {
+
+            $upload = Helper::uploadFile($request->file, $allowed_exts);
+            $filename = basename($upload);
+
+            if ($upload) {
+                $response['status'] = 'success';
+                $response['url'] = Helper::uploadedFileUrl($filename);
+            } else {
+                $response['msg'] = __('Error occured uploading file');
+            }
+        }
+
+        return \Response::json($response);
     }
 }

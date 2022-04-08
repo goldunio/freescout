@@ -44,8 +44,16 @@
         "name": "mailboxes.ajax"
     },
     {
-        "uri": "customer\/ajax-search",
+        "uri": "uploads\/upload",
+        "name": "uploads.upload"
+    },
+    {
+        "uri": "customers\/ajax-search",
         "name": "customers.ajax_search"
+    },
+    {
+        "uri": "customers\/ajax",
+        "name": "customers.ajax"
     },
     {
         "uri": "modules\/ajax",

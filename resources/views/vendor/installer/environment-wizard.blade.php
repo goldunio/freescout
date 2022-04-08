@@ -100,7 +100,7 @@
                         <option value="mysql" @if (old('database_connection', env('DB_CONNECTION', 'mysql')) == 'mysql') selected @endif>MySQL</option>
                         <option value="pgsql" @if (old('database_connection', env('DB_CONNECTION')) == 'pgsql') selected @endif>PostgreSQL</option>
                         <option value="sqlite" @if (old('database_connection', env('DB_CONNECTION')) == 'sqlite') selected @endif>SQLite</option>
-                        <option value="sqlsrv" @if (old('database_connection', env('DB_CONNECTION')) == 'sqlsrv') selected @endif>SQL Server</option>
+                        {{--<option value="sqlsrv" @if (old('database_connection', env('DB_CONNECTION')) == 'sqlsrv') selected @endif>SQL Server</option>--}}
                     </select>
                     @if ($errors->has('database_connection'))
                         <span class="error-block">
@@ -166,7 +166,8 @@
                     <label for="database_password">
                         Password
                     </label>
-                    <input type="text" name="database_password" id="database_password" value="{{ old('database_password', env('DB_PASSWORD')) }}" />
+                    <input type="text" name="database_password" id="database_password" value="{{ old('database_password', env('DB_PASSWORD')) }}" maxlength="50"/>
+                    <span style="color: #AAAAAA; position: relative; top: -5px;">(Maximum password length is 50 characters)</span>
                     @if ($errors->has('database_password'))
                         <span class="error-block">
                             <i class="fa fa-fw fa-exclamation-triangle" aria-hidden="true"></i>
@@ -222,7 +223,7 @@
                 </div>
             </div>
             <div class="tab" id="tab4content">
-                
+
                 <div class="form-group {{ $errors->has('admin_email') ? ' has-error ' : '' }}">
                     <label for="admin_email">
                         Email

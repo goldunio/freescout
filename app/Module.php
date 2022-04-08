@@ -181,7 +181,7 @@ class Module extends Model
     {
         $missing = [];
 
-        $list = explode(',', $required_extensions);
+        $list = explode(',', $required_extensions ?? '');
         if (!is_array($list) || !count($list)) {
             return [];
         }
@@ -193,5 +193,44 @@ class Module extends Model
         }
 
         return $missing;
+    }
+
+    /**
+     * Check missing modules required by the module.
+     */
+    public static function getMissingModules($required_modules, $modules = [])
+    {
+        $missing = [];
+
+        if (!$modules) {
+            $modules = \Module::all();
+        }
+
+        if (!is_array($required_modules) || !count($required_modules)) {
+            return [];
+        }
+        foreach ($required_modules as $alias => $version) {
+            $module = null;
+            foreach ($modules as $module_item) {
+                if ($module_item->alias == $alias) {
+                    $module = $module_item;
+                }
+            }
+            if (!$module) {
+                $missing[$alias] = $version;
+                continue;
+            }
+
+            if (!self::isActive($alias) || !version_compare($module->version, $version, '>=')) {
+                $missing[$alias] = $version;
+            }
+        }
+
+        return $missing;
+    }
+
+    public static function formatName($name)
+    {
+        return preg_replace("/ Module$/", '', $name);
     }
 }

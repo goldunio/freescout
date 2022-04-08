@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Conversation;
 use App\Option;
+use App\Subscription;
 use App\User;
 use Illuminate\Http\Request;
 use Validator;
@@ -100,7 +101,8 @@ class SettingsController extends Controller
                             'env' => 'APP_FETCH_SCHEDULE',
                         ],
                         'mail_password' => [
-                            'safe_password' => true
+                            'safe_password' => true,
+                            'encrypt' => true,
                         ]
                     ],
                 ];
@@ -108,19 +110,39 @@ class SettingsController extends Controller
             case 'general':
                 $params = [
                     'settings' => [
+                        'email_conv_history' => [
+                            'env' => 'APP_EMAIL_CONV_HISTORY',
+                        ],
+                        'email_user_history' => [
+                            'env' => 'APP_EMAIL_USER_HISTORY',
+                        ],
                         'locale' => [
                             'env' => 'APP_LOCALE',
                         ],
                         'timezone' => [
                             'env' => 'APP_TIMEZONE',
                         ],
+                        'user_permissions' => [
+                            'env' => 'APP_USER_PERMISSIONS',
+                            'env_encode' => true,
+                        ],
                     ],
                 ];
                 break;
             case 'alerts':
+                $subscriptions_defaults = Subscription::getDefaultSubscriptions();
+                $subscriptions = array();
+                foreach ($subscriptions_defaults as $medium => $subscriptions_for_medium) {
+                    foreach ($subscriptions_defaults[$medium] as $subscription) {
+                        $subscriptions[] = (object) array("medium" => $medium, "event" => $subscription);
+                    }
+                }
                 $params = [
                     'template_vars' => [
                         'logs' => \App\ActivityLog::getAvailableLogs(),
+                        'person' => null,
+                        'subscriptions' => $subscriptions,
+                        'mobile_available' => \Eventy::filter('notifications.mobile_available', false),
                     ],
                     'settings' => [
                         'alert_logs' => [
@@ -165,9 +187,11 @@ class SettingsController extends Controller
                 $settings = [
                     'company_name'         => Option::get('company_name', \Config::get('app.name')),
                     'next_ticket'          => (Option::get('next_ticket') >= Conversation::max('number') + 1) ? Option::get('next_ticket') : Conversation::max('number') + 1,
-                    'user_permissions'     => Option::get('user_permissions', []),
+                    'user_permissions'     => User::getGlobalUserPermissions(),
                     'email_branding'       => Option::get('email_branding'),
                     'open_tracking'        => Option::get('open_tracking'),
+                    'email_conv_history'   => config('app.email_conv_history'),
+                    'email_user_history'   => config('app.email_user_history'),
                     'enrich_customer_data' => Option::get('enrich_customer_data'),
                     'time_format'          => Option::get('time_format', User::TIME_FORMAT_24),
                     'locale'               => \Helper::getRealAppLocale(),
@@ -181,7 +205,7 @@ class SettingsController extends Controller
                     'mail_host'       => Option::get('mail_host', \Config::get('mail.host')),
                     'mail_port'       => Option::get('mail_port', \Config::get('mail.port')),
                     'mail_username'   => Option::get('mail_username', \Config::get('mail.username')),
-                    'mail_password'   => Option::get('mail_password', \Config::get('mail.password')),
+                    'mail_password'   => \Helper::decrypt(Option::get('mail_password', \Config::get('mail.password'))),
                     'mail_encryption' => Option::get('mail_encryption', \Config::get('mail.encryption')),
                     'fetch_schedule'  => config('app.fetch_schedule'),
                 ];
@@ -194,6 +218,7 @@ class SettingsController extends Controller
                     'alert_logs',
                     'alert_logs_names',
                     'alert_logs_period',
+                    'subscription_defaults',
                 ], [
                     'alert_logs_names'  => [],
                     'alert_logs'        => config('app.alert_logs'),
@@ -267,7 +292,21 @@ class SettingsController extends Controller
             // Option has to be saved to .env file.
             if (!empty($settings_params[$option_name]) && !empty($settings_params[$option_name]['env'])) {
                 $env_value = $request->settings[$option_name] ?? '';
+
+                if (is_array($env_value)) {
+                    $env_value = json_encode($env_value);
+                }
+
+                if (!empty($settings_params[$option_name]['encrypt'])) {
+                    $env_value = encrypt($env_value);
+                }
+
+                if (!empty($settings_params[$option_name]['env_encode'])) {
+                    $env_value = base64_encode($env_value);
+                }
+
                 \Helper::setEnvFileVar($settings_params[$option_name]['env'], $env_value);
+
                 config($option_name, $env_value);
                 $cc_required = true;
                 continue;
@@ -276,11 +315,21 @@ class SettingsController extends Controller
             // By some reason isset() does not work for empty elements.
             if (array_key_exists($option_name, $request->settings)) {
                 $option_value = $request->settings[$option_name];
+
+                if (!empty($settings_params[$option_name]['encrypt'])) {
+                    $option_value = encrypt($option_value);
+                }
+
                 Option::set($option_name, $option_value);
             } else {
                 // If option does not exist, default will be used,
                 // so we can not just remove bool settings.
-                if (\Option::getDefault($option_name, null) === true) {
+                if (isset($settings_params[$option_name]['default'])) {
+                    $default = $settings_params[$option_name]['default'];
+                } else {
+                    $default = \Option::getDefault($option_name, null);
+                }
+                if ($default === true) {
                     Option::set($option_name, false);
                 } elseif (is_array(\Option::getDefault($option_name, -1))) {
                     Option::set($option_name, []);
@@ -295,9 +344,14 @@ class SettingsController extends Controller
             \Helper::clearCache(['--doNotGenerateVars' => true]);
         }
 
-        \Session::flash('flash_success_floating', __('Settings updated'));
+        // \Helper::clearCache prevents \Session::flash() from displaying.
+        $request->session()->flash('flash_success_floating', __('Settings updated'));
 
-        return redirect()->route('settings', ['section' => $section]);
+        $response = redirect()->route('settings', ['section' => $section]);
+
+        $response = \Eventy::filter('settings.after_save', $response, $request, $section, $settings);
+
+        return $response;
     }
 
     /**
@@ -331,7 +385,7 @@ class SettingsController extends Controller
                     }
 
                     if (!$test_result && !$response['msg']) {
-                        $response['msg'] = __('Error occurend sending email. Please check your mail server logs for more details.');
+                        $response['msg'] = __('Error occurred sending email. Please check your mail server logs for more details.');
                     }
                 }
 

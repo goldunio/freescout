@@ -2,7 +2,9 @@ var fs_sidebar_menu_applied = false;
 var fs_loader_timeout;
 var fs_processing_send_reply = false;
 var fs_processing_save_draft = false;
+var fs_send_reply_allowed = true;
 var fs_send_reply_after_draft = false;
+var fs_autosave_note = true;
 var fs_connection_errors = 0;
 var fs_editor_change_timeout = -1;
 // For how long to remember conversation note drafts
@@ -14,11 +16,45 @@ var fs_conv_editor_toolbar = [
     ['style', ['attachment', 'bold', 'italic', 'underline', 'lists', 'removeformat', 'link', 'picture', 'codeview']],
     ['actions', ['savedraft', 'discard']],
 ];
+var fs_in_app_data = {};
+var fs_actions = {};
+var fs_filters = {};
+var fs_body_default = '<div><br></div>';
+var fs_prev_focus = true;
 
 // Ajax based notifications;
 var poly;
 // List of funcions preparin data for polycast receive request
 var poly_data_closures = [];
+
+var fs_select2_config = {
+	//containerCssClass: "select2-multi-container", // select2-with-loader
+	dropdownCssClass: "select2-multi-dropdown",
+	//dropdownParent: $('.modal-dialog:visible:first'),
+	multiple: true,
+	//maximumSelectionLength: 1,
+	//placeholder: input.attr('placeholder'),
+	minimumInputLength: 1,
+	tags: true,
+	createTag: function (params) {
+	    return {
+			id: params.term,
+			text: params.term,
+			newOption: true
+	    }
+	},
+	templateResult: function (data) {
+	    var $result = $("<span></span>");
+
+	    $result.text(data.text);
+
+	    if (data.newOption) {
+	     	$result.append(" <em>("+Lang.get("messages.add_lower")+")</em>");
+	    }
+
+	    return $result;
+	}
+};
 
 // Default validation options
 // https://devhints.io/parsley
@@ -44,7 +80,7 @@ $.extend(window.ParsleyConfig, {
     			return element.parent();
     		}
     	}
-    		
+
     	return help_block;
     },
     errorsWrapper: '<div class="help-block"></div>',
@@ -56,8 +92,8 @@ $.extend(window.ParsleyConfig, {
     serviceWorker: './customServiceWorker.js', // Sets a custom service worker script
     fallback: function(payload) {
         // Code that executes on browsers with no notification support
-        // "payload" is an object containing the 
-        // title, body, tag, and icon of the notification 
+        // "payload" is an object containing the
+        // title, body, tag, and icon of the notification
     }
 });*/
 
@@ -70,6 +106,7 @@ var EditorAttachmentButton = function (context) {
 	var button = ui.button({
 		contents: '<i class="glyphicon glyphicon-paperclip"></i>',
 		tooltip: Lang.get("messages.upload_attachments"),
+		className: 'note-btn-attachment',
 		container: 'body',
 		click: function () {
 			var element = document.createElement('div');
@@ -79,7 +116,7 @@ var EditorAttachmentButton = function (context) {
 			fileInput.addEventListener('change', function() {
 				if (fileInput.files) {
 					for (var i = 0; i < fileInput.files.length; i++) {
-						editorSendFile(fileInput.files[i], true);	
+						editorSendFile(fileInput.files[i], true, true);
 		            }
 			    }
 			});
@@ -128,12 +165,13 @@ var EditorInsertVarButton = function (context) {
 	var ui = $.summernote.ui;
 
 	// todo: fallback=
-	var contents = 
+	var contents =
 		'<select class="form-control summernote-inservar" tabindex="-1">'+
 		    '<option value="">'+Lang.get("messages.insert_var")+' ...</option>'+
 		    '<optgroup label="'+Lang.get("messages.mailbox")+'">'+
 		        '<option value="{%mailbox.email%}">'+Lang.get("messages.email")+'</option>'+
 		        '<option value="{%mailbox.name%}">'+Lang.get("messages.name")+'</option>'+
+		        '<option value="{%mailbox.fromName%}">'+Lang.get("messages.from_name")+'</option>'+
 		    '</optgroup>'+
 		    '<optgroup label="'+Lang.get("messages.conversation")+'">'+
 		        '<option value="{%conversation.number%}">'+Lang.get("messages.number")+'</option>'+
@@ -148,6 +186,10 @@ var EditorInsertVarButton = function (context) {
 		        '<option value="{%user.fullName%}">'+Lang.get("messages.full_name")+'</option>'+
 		        '<option value="{%user.firstName%}">'+Lang.get("messages.first_name")+'</option>'+
 		        '<option value="{%user.lastName%}">'+Lang.get("messages.last_name")+'</option>'+
+		        '<option value="{%user.jobTitle%}">'+Lang.get("messages.job_title")+'</option>'+
+		        '<option value="{%user.phone%}">'+Lang.get("messages.phone")+'</option>'+
+		        '<option value="{%user.email%}">'+Lang.get("messages.email_addr")+'</option>'+
+		        '<option value="{%user.photoUrl%}">'+Lang.get("messages.photo_url")+'</option>'+
 		    '</optgroup>'+
 	    '</select>';
 
@@ -166,7 +208,7 @@ var EditorRemoveFormatButton = function (context) {
 
 	// create button
 	var button = ui.button({
-		contents: '<i class="glyphicon glyphicon-remove"></i>',
+		contents: '<i class="note-icon-close"></i>',
 		tooltip: Lang.get("messages.remove_format"),
 		container: 'body',
 		click: function () {
@@ -243,7 +285,71 @@ $(document).ready(function(){
 	polycastInit();
 	webNotificationsInit();
 	initAccordionHeading();
+	initMuteMailbox();
+
+	// Search button
+	$('#search-dt').click(function() {
+		var dt = $(this);
+		setTimeout(function() { 
+			dt.next().children().find('.form-control:first').focus();
+		}, 100);
+	});
+
+	// Dirty JS hack because there was no way found to expand outer container when sidebar grows.
+	if ($('#conv-layout-customer').length && $(window).outerWidth() >= 1100 && $('.conv-sidebar-block').length > 2) {
+		adjustCustomerSidebarHeight();
+		setTimeout(adjustCustomerSidebarHeight, 2000);
+	}
 });
+
+function initMuteMailbox()
+{
+	$('.mailbox-mute-trigger, .mailbox-mute-trigger span').click(function(e) {
+
+		var button = $(this);
+		if (!button.hasClass('mailbox-mute-trigger')) {
+			button = button.parent();
+			e.stopPropagation();
+		}
+
+	    button.button('loading');
+
+	    var mute = parseInt(button.attr('data-mute'));
+
+		fsAjax(
+			{
+				action: 'mute',
+				mailbox_id: button.attr('data-mailbox-id'),
+				mute: mute
+			},
+			laroute.route('mailboxes.ajax'),
+			function(response) {
+				button.button('reset');
+				if (isAjaxSuccess(response)) {
+					setTimeout(function(){ 
+						button.children('span').addClass('hidden');
+						var new_mute;
+						if (mute == 1) {
+							new_mute = 0;
+							button.children('.glyphicon').removeClass('glyphicon-volume-off').addClass('glyphicon-volume-up');
+							button.parents('.dash-card:first, .sidebar-2col:first').children().find('.mailbox-name').prepend('<i class="glyphicon glyphicon-volume-off"></i> ');
+						} else {
+							new_mute = 1;
+							button.children('.glyphicon').removeClass('glyphicon-volume-up').addClass('glyphicon-volume-off');
+							button.parents('.dash-card:first, .sidebar-2col:first').children().find('.mailbox-name').children('.glyphicon:first').remove();
+						}
+						button.attr('data-mute', new_mute);
+						button.children('.mute-text-'+new_mute).removeClass('hidden');
+					}, 100);
+				} else {
+					showAjaxError(response);
+				}
+			}, true
+		);
+		e.preventDefault();
+	})
+}
+
 
 // Initialize bootstrap tooltip for the element
 function initTooltip(selector)
@@ -251,10 +357,16 @@ function initTooltip(selector)
 	$(selector).tooltip({container: 'body'});
 }
 
+function initTooltips()
+{
+	initTooltip('[data-toggle="tooltip"]');
+}
+
 function triggersInit()
 {
 	// Tooltips
-    initTooltip('[data-toggle="tooltip"]');
+    initTooltips();
+    
     var handler = function() {
 	  return $('body [data-toggle="tooltip"]').tooltip('hide');
 	};
@@ -268,7 +380,15 @@ function triggersInit()
 	});
 
 	// Modal windows
-	$('a[data-trigger="modal"]').click(function(e) {
+	initModals();
+}
+
+function initModals(html_tag)
+{
+	if (typeof(html_tag) == "undefined") {
+		html_tag = 'a';
+	}
+	$(html_tag+'[data-trigger="modal"][data-modal-applied!="1"],.fs-trigger-modal[data-modal-applied!="1"]').attr('data-modal-applied', '1').click(function(e) {
     	triggerModal($(this));
     	e.preventDefault();
 	});
@@ -276,9 +396,31 @@ function triggersInit()
 
 function mailboxUpdateInit(from_name_custom)
 {
+	var selector = '#signature';
+
 	$(document).ready(function(){
-		
-		summernoteInit('#signature', {insertVar: true});
+
+		summernoteInit(selector, {
+			insertVar: true,
+			disableDragAndDrop: false,
+			callbacks: {
+				onInit: function() {
+					$(selector).parent().children().find('.note-statusbar').remove();
+					$(selector).parent().children().find('.summernote-inservar:first').on('change', function(event) {
+						$(selector).summernote('insertText', $(this).val());
+						$(this).val('');
+					});
+				},
+				onImageUpload: function(files) {
+					if (!files) {
+						return;
+					}
+					for (var i = 0; i < files.length; i++) {
+						editorSendFile(files[i], undefined, false);
+					}
+				}
+			}
+		});
 
 	    $('#from_name').change(function(event) {
 			if ($(this).val() == from_name_custom) {
@@ -287,6 +429,21 @@ function mailboxUpdateInit(from_name_custom)
 				$('#from_name_custom_container').addClass('hidden');
 			}
 		});
+
+		$('#before-reply-toggle').change(function(event) {
+			if ($(this).is(':checked')) {
+				$('#before_reply').removeAttr('readonly').val($('#before_reply').attr('data-default'));
+			} else {
+				$('#before_reply').attr('readonly', 'readonly');
+				var val = $('#before_reply').val();
+				if (val) {
+					$('#before_reply').attr('data-default', val).attr('placeholder', val);
+					$('#before_reply').val('');
+				}
+			}
+		});
+
+		fsDoAction('mailbox.update_init');
 	});
 }
 
@@ -301,10 +458,10 @@ function deleteMailboxModal(modal)
 				action: 'delete_mailbox',
 				mailbox_id: getGlobalAttr('mailbox_id'),
 				password: $('.delete-mailbox-pass:visible:first').val()
-			}, 
+			},
 			laroute.route('mailboxes.ajax'),
 			function(response) {
-				if (typeof(response.status) != "undefined" && response.status == "success") {
+				if (isAjaxSuccess(response)) {
 					window.location.href = laroute.route('mailboxes');
 					return;
 				} else {
@@ -317,8 +474,35 @@ function deleteMailboxModal(modal)
 	});
 }
 
+// Deactivate license
+function deactivateLicenseModal(modal)
+{
+	modal.children().find('.button-deactivate-license:first').click(function(e) {
+		var button = $(this);
+	    button.button('loading');
+		fsAjax(
+			{
+				action: 'deactivate_license',
+				alias: $('.deactivate-license-module:visible:first').val(),
+				license: $('.deactivate-license-key:visible:first').val(),
+				any_url: 1,
+			},
+			laroute.route('modules.ajax'),
+			function(response) {
+				if (isAjaxSuccess(response)) {
+					window.location.href = '';
+				} else {
+					showAjaxError(response);
+					button.button('reset');
+				}
+			}, true
+		);
+		e.preventDefault();
+	});
+}
+
 // Init summernote editor with default settings
-// 
+//
 // https://github.com/Studio-42/elFinder/wiki/Integration-with-Multiple-Summernote-%28fixed-functions%29
 // https://stackoverflow.com/questions/21628222/summernote-image-upload
 // https://www.kerneldev.com/2018/01/11/using-summernote-wysiwyg-editor-with-laravel/
@@ -333,7 +517,7 @@ function summernoteInit(selector, new_options)
 		lists: EditorListsButton
 	};
 
-	if (typeof(new_options.insertVar) != "undefined" || new_options.insertVar) {
+	if (typeof(new_options.insertVar) == "undefined" || new_options.insertVar) {
 		buttons.insertvar = EditorInsertVarButton;
 	}
 
@@ -345,7 +529,7 @@ function summernoteInit(selector, new_options)
 		disableDragAndDrop: true,
 		toolbar: [
 		    // [groupName, [list of button]]
-		    ['style', ['bold', 'italic', 'underline', 'color', 'lists', 'removeformat', 'link', 'codeview']],
+		    ['style', ['bold', 'italic', 'underline', 'color', 'lists', 'removeformat', 'link', 'picture', 'codeview']],
 		    ['actions-select', ['insertvar']]
 		],
 		buttons: buttons,
@@ -359,6 +543,18 @@ function summernoteInit(selector, new_options)
 					$(selector).parent().children().find('.summernote-inservar:first').on('change', function(event) {
 						$(selector).summernote('insertText', $(this).val());
 						$(this).val('');
+					});
+				}
+
+				// Hide some variables
+				if (typeof(new_options.excludeVars) != "undefined" || new_options.excludeVars) {
+					$(selector).parent().children().find('.summernote-inservar:first option').each(function(i, el) {
+						for (var var_i = 0; var_i < new_options.excludeVars.length; var_i++) {
+							if ($(el).val().indexOf(new_options.excludeVars[var_i]) != -1) {
+								$(el).parent().hide();
+								break;
+							}
+						}
 					});
 				}
 		    }
@@ -411,7 +607,7 @@ function mailboxConnectionInit(out_method_smtp)
 					action: 'send_test',
 					mailbox_id: getGlobalAttr('mailbox_id'),
 					to: $('#send_test').val()
-				}, 
+				},
 				laroute.route('mailboxes.ajax'),
 				function(response) {
 					if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -420,7 +616,7 @@ function mailboxConnectionInit(out_method_smtp)
 						showAjaxError(response, true);
 					}
 					button.button('reset');
-				}, 
+				},
 				true
 			);
 		});
@@ -430,6 +626,27 @@ function mailboxConnectionInit(out_method_smtp)
 function mailboxConnectionIncomingInit()
 {
 	$(document).ready(function(){
+        let changeProtocol = function() {
+            let in_protocol = $('[name="in_protocol"]').val();
+
+            // Only show default connection settings for IMAP/POP3.
+            $('[data-in-protocol]').hide();
+
+            let specific = $('[data-in-protocol="' + in_protocol + '"]');
+
+            if (specific.length >= 1) {
+                specific.show();
+            } else {
+                $('[data-in-protocol="default"]').show();
+            }
+        };
+
+        $('[name="in_protocol"]').on('change', function(event) {
+            changeProtocol();
+        });
+
+        changeProtocol();
+
 	    $('#check-connection').click(function(event) {
 	    	var button = $(this);
 	    	button.button('loading');
@@ -437,7 +654,7 @@ function mailboxConnectionIncomingInit()
 				{
 					action: 'fetch_test',
 					mailbox_id: getGlobalAttr('mailbox_id')
-				}, 
+				},
 				laroute.route('mailboxes.ajax'),
 				function(response) {
 					if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -446,7 +663,7 @@ function mailboxConnectionIncomingInit()
 						showAjaxError(response, true);
 					}
 					button.button('reset');
-				}, 
+				},
 				true
 			);
 		});
@@ -458,7 +675,7 @@ function mailboxConnectionIncomingInit()
 				{
 					action: 'imap_folders',
 					mailbox_id: getGlobalAttr('mailbox_id')
-				}, 
+				},
 				laroute.route('mailboxes.ajax'),
 				function(response) {
 
@@ -483,42 +700,15 @@ function mailboxConnectionIncomingInit()
 					}
 
 					showAjaxResult(response);
-					
+
 					button.button('reset');
-				}, 
+				},
 				true
 			);
 			e.preventDefault();
 		});
 
-		$("#in_imap_folders").select2({
-			//containerCssClass: "select2-multi-container", // select2-with-loader
-     		dropdownCssClass: "select2-multi-dropdown",
-			//dropdownParent: $('.modal-dialog:visible:first'),
-			multiple: true,
-			//maximumSelectionLength: 1,
-			//placeholder: input.attr('placeholder'),
-			minimumInputLength: 1,
-			tags: true,
-			createTag: function (params) {
-			    return {
-					id: params.term,
-					text: params.term,
-					newOption: true
-			    }
-			},
-			templateResult: function (data) {
-			    var $result = $("<span></span>");
-
-			    $result.text(data.text);
-
-			    if (data.newOption) {
-			     	$result.append(" <em>("+Lang.get("messages.add_lower")+")</em>");
-			    }
-
-			    return $result;
-			},
-		});
+		$("#in_imap_folders").select2(fs_select2_config);
 	});
 }
 
@@ -546,7 +736,7 @@ function mailSettingsInit()
 				{
 					action: 'send_test',
 					to: $('#send_test').val()
-				}, 
+				},
 				laroute.route('settings.ajax'),
 				function(response) {
 					if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -555,7 +745,7 @@ function mailSettingsInit()
 						showAjaxError(response);
 					}
 					button.button('reset');
-				}, 
+				},
 				true
 			);
 		});
@@ -594,10 +784,24 @@ function multiInputInit()
 	$(document).ready(function() {
 	    $('.multi-add').click(function() {
 	    	var clone = $(this).parents('.multi-container:first').children('.multi-item:first').clone(true, true);
+	    	var index = parseInt($(this).parents('.multi-container:first').children('.block-help:last').attr('data-max-i'));
+	    	if (isNaN(index)) {
+	    		index = 0;
+	    	}
+	    	index++;
+
+	    	clone.find(':input').each(function(i, el) {
+	    		var name = $(el).attr('name');
+	    		name = name.replace(/^([^\[]+\[)([0-9]+)(\])/, "$1"+index+"$3");
+	    		$(el).attr('name', name.replace(/^([\[]+\[)([0-9]+)(\])/, "$1"+index+"$3"));
+	    	});
+
 	    	clone.find(':input').val('');
 	    	clone.find('.help-block').remove();
 	    	clone.removeClass('has-error');
 	    	clone.insertAfter($(this).parents('.multi-container:first').children('.multi-item:last'));
+
+	    	$(this).parents('.multi-container:first').children('.block-help:last').attr('data-max-i', index);
 		});
 		$('.multi-remove').click(function() {
 	    	if ($(this).parents('.multi-container:first').children('.multi-item').length > 1) {
@@ -609,7 +813,7 @@ function multiInputInit()
 	} );
 }
 
-function fsAjax(data, url, success_callback, no_loader, error_callback)
+function fsAjax(data, url, success_callback, no_loader, error_callback, custom_options)
 {
 	if (!url) {
 		console.log('Empty URL');
@@ -638,14 +842,20 @@ function fsAjax(data, url, success_callback, no_loader, error_callback)
 		}
 	}
 
-	$.ajax({
+	var options = {
 		url: url,
 		method: 'post',
 		dataType: 'json',
 		data: data,
 		success: success_callback,
 		error: error_callback
-   });
+    };
+
+    if (typeof(custom_options) == "object") {
+    	options = {...options, ...custom_options};
+    }
+
+	$.ajax(options);
 }
 
 // Show loader
@@ -670,7 +880,7 @@ function loaderHide()
 function fsFloatingAlertsInit()
 {
 	var alerts = $(".alert-floating:hidden");
-			
+
 	alerts.each(function(i, el) {
 		// Stack alerts
 		var top = 0;
@@ -690,7 +900,7 @@ function fsFloatingAlertsInit()
 				close_after = 10000;
 			}
 			setTimeout(function(){
-			    el.remove(); 
+			    el.remove();
 			}, close_after);
 		}
 	});
@@ -732,11 +942,20 @@ function initConversation()
 		// Change conversation assignee
 	    jQuery(".conv-user li > a").click(function(e){
 			if (!$(this).hasClass('active')) {
+				if (fsApplyFilter('conversation.can_change_user', true, {trigger: $(this)})) {
+					$(this).trigger('fs-conv-user-change');
+				}
+			}
+			e.preventDefault();
+		});
+
+	    jQuery(".conv-user li > a").bind('fs-conv-user-change', function(e){
+			//if (!$(this).hasClass('active')) {
 				fsAjax({
 					action: 'conversation_change_user',
 					user_id: $(this).attr('data-user_id'),
 					conversation_id: getGlobalAttr('conversation_id')
-				}, 
+				},
 				laroute.route('conversations.ajax'),
 				function(response) {
 					if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -753,13 +972,21 @@ function initConversation()
 						loaderHide();
 					}
 				});
-			}
-			e.preventDefault();
+			//}
+			//e.preventDefault();
 		});
 
 		// Change conversation status
 	    jQuery(".conv-status li > a").click(function(e){
 			if (!$(this).hasClass('active')) {
+				if (fsApplyFilter('conversation.can_change_status', true, {trigger: $(this)})) {
+					$(this).trigger('fs-conv-status-change');
+				}
+			}
+			e.preventDefault();
+		});
+	    jQuery(".conv-status li > a").bind('fs-conv-status-change', function(e){
+			//if (!$(this).hasClass('active')) {
 				var status = $(this).attr('data-status');
 				// Restore conversation button does not have a status
 				if (!status) {
@@ -768,8 +995,9 @@ function initConversation()
 				fsAjax({
 					action: 'conversation_change_status',
 					status: status,
-					conversation_id: getGlobalAttr('conversation_id')
-				}, 
+					conversation_id: getGlobalAttr('conversation_id'),
+					folder_id: getQueryParam('folder_id')
+				},
 				laroute.route('conversations.ajax'),
 				function(response) {
 					if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -785,8 +1013,8 @@ function initConversation()
 					}
 					loaderHide();
 				});
-			}
-			e.preventDefault();
+			// }
+			// e.preventDefault();
 		});
 
 		// Restore conversation
@@ -795,7 +1023,7 @@ function initConversation()
 				fsAjax({
 					action: 'restore_conversation',
 					conversation_id: getGlobalAttr('conversation_id')
-				}, 
+				},
 				laroute.route('conversations.ajax'),
 				function(response) {
 					if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -833,15 +1061,16 @@ function initConversation()
 	    	var reply_block = $(".conv-reply-block");
 	    	if (reply_block.hasClass('hidden')  /*|| $(this).hasClass('inactive')*/) {
 	    		// Show
-				$(".conv-action-block").addClass('hidden');
+				hideActionBlocks();
 				reply_block.removeClass('hidden')
 					.addClass('conv-note-block')
 					.removeClass('conv-forward-block')
 					.children().find(":input[name='is_note']:first").val(1);
+				$('#conv-subject').addClass('action-visible');
 				reply_block.children().find(":input[name='thread_id']:first").val('');
 				reply_block.children().find(":input[name='subtype']:first").val('');
 				//$(".conv-reply-block").children().find(":input[name='body']:first").val('');
-				
+
 				// Note never changes Assignee by default
 				reply_block.children().find(":input[name='user_id']:first").val(getConvData('user_id'));
 
@@ -855,6 +1084,8 @@ function initConversation()
 				$(this).removeClass('inactive');
 				//$('#body').summernote("code", '');
 				$('#body').summernote('focus');
+
+				maybeScrollToReplyBlock();
 			} /*else {
 				// Hide
 				$(".conv-action-block").addClass('hidden');
@@ -866,6 +1097,12 @@ function initConversation()
 		// Forward
 	    jQuery(".conv-forward").click(function(e){
 	    	forwardConversation(e);
+			e.preventDefault();
+		});
+
+		// Follow/Unfollow
+	    jQuery(".conv-follow").click(function(e){
+	    	followConversation($(this).attr('data-follow-action'));
 			e.preventDefault();
 		});
 
@@ -883,7 +1120,7 @@ function initConversation()
 			editDraft($(this));
 			e.preventDefault();
 		});
-		
+
 		// Discard draft
 		jQuery(".discard-draft-trigger").click(function(e){
 			discardDraft($(this).parents('.thread:first').attr('data-thread_id'));
@@ -891,7 +1128,7 @@ function initConversation()
 		});
 
 	    // Delete conversation
-	    jQuery(".conv-delete").click(function(e){
+	    jQuery(".conv-delete,.conv-delete-forever").click(function(e){
 	    	var confirm_html = '<div>'+
 			'<div class="text-center">'+
 			'<div class="text-larger margin-top-10">'+Lang.get("messages.confirm_delete_conversation")+'</div>'+
@@ -902,18 +1139,23 @@ function initConversation()
     		'</div>'+
     		'</div>';
 
+    		var action = 'delete_conversation';
+    		if ($(this).hasClass('conv-delete-forever')) {
+    			action = 'delete_conversation_forever';
+    		}
+
 			showModalDialog(confirm_html, {
 				on_show: function(modal) {
 					modal.children().find('.delete-conversation-ok:first').click(function(e) {
 						modal.modal('hide');
 						fsAjax(
 							{
-								action: 'delete_conversation',
+								action: action,
 								conversation_id: getGlobalAttr('conversation_id')
-							}, 
+							},
 							laroute.route('conversations.ajax'),
 							function(response) {
-								if (typeof(response.status) != "undefined" && response.status == "success" 
+								if (isAjaxSuccess(response)
 									&& typeof(response.redirect_url) != "undefined"
 								) {
 									window.location.href = response.redirect_url;
@@ -948,10 +1190,45 @@ function initConversation()
 			e.preventDefault();
 		});
 
+		// Edit subject
+		jQuery(".conv-subjtext").click(function(e){
+	    	$(this).addClass('conv-subj-editing');
+		});
+
+		// Save subject
+	    jQuery(".conv-subj-editor button:first").click(function(e){
+	    	var button = $(this);
+	    	button.button('loading');
+	    	var value = $('#conv-subj-value').val();
+			fsAjax(
+				{
+					action: 'update_subject',
+					conversation_id: getGlobalAttr('conversation_id'),
+					value: value
+				},
+				laroute.route('conversations.ajax'),
+				function(response) {
+					if (isAjaxSuccess(response)) {
+						$('.conv-subjtext > span:first').text(value);
+					} else {
+						showAjaxError(response);
+					}
+					button.parents('.conv-subj-editing:first').removeClass('conv-subj-editing');
+					button.button('reset');
+				}, true
+			);
+		});
+
+		// Print
+		if (getQueryParam('print')) {
+			window.print();
+		}
+
 		starConversationInit();
 		maybeShowStoredNote();
 		maybeShowDraft();
 		processLinks();
+		initConvSettings();
 	});
 }
 
@@ -1076,16 +1353,17 @@ function prepareReplyForm()
 	$(".attachments-upload:first :input, .attachments-upload:first li").remove();
 }
 
-function showReplyForm(data)
+function showReplyForm(data, scroll_offset)
 {
-	$(".conv-action-block").addClass('hidden');
+	hideActionBlocks();
 	$(".conv-reply-block").removeClass('hidden')
 		.removeClass('conv-note-block')
 		.removeClass('conv-forward-block')
 		.children().find(":input[name='is_note']:first").val('');
+	$('#conv-subject').addClass('action-visible');
 	$(".conv-reply-block :input[name='thread_id']:first").val('');
 	$(".conv-reply-block :input[name='subtype']:first").val('');
-	
+
 	// When switching from note to reply, body has to be preserved
 	//$(".conv-reply-block").children().find(":input[name='body']:first").val(body_val);
 	$(".conv-action").addClass('inactive');
@@ -1100,9 +1378,11 @@ function showReplyForm(data)
 			}
 			if (field == 'to_email' || field == 'cc' || field == 'bcc') {
 				if (data && typeof(data.to) != "undefined") {
-					addSelect2Option($("#"+field), {
-						id: data[field], text: data[field]
-					});
+					for (var i in data[field]) {
+						addSelect2Option($("#"+field), {
+							id: data[field][i], text: data[field][i]
+						});
+					}
 				} else {
 					$("#"+field).children('option:first').removeAttr('selected');
 				}
@@ -1126,6 +1406,11 @@ function showReplyForm(data)
 
 	// Select2 for CC/BCC
 	initRecipientSelector();
+
+	if (typeof(scroll_offset) == "undefined") {
+		scroll_offset = 0;
+	}
+	maybeScrollToReplyBlock(scroll_offset);
 }
 
 // Add an option to select2
@@ -1170,6 +1455,11 @@ function getGlobalAttr(attr)
 	return $("body:first").attr('data-'+attr);
 }
 
+function setGlobalAttr(attr, value)
+{
+	return $("body:first").attr('data-'+attr, value);
+}
+
 // Initialize conversation body editor
 function convEditorInit()
 {
@@ -1181,13 +1471,13 @@ function convEditorInit()
 	    lists: EditorListsButton
 	});
 
-	$('#body').summernote({
+	var options = {
 		minHeight: 120,
 		dialogsInBody: true,
 		dialogsFade: true,
 		disableResizeEditor: true,
 		followingToolbar: false,
-		toolbar: fs_conv_editor_toolbar,
+		toolbar: fsApplyFilter('conversation.editor_toolbar', fs_conv_editor_toolbar),
 		buttons: fs_conv_editor_buttons,
 		callbacks: {
 	 		onImageUpload: function(files) {
@@ -1195,7 +1485,7 @@ function convEditorInit()
 	 				return;
 	 			}
 	            for (var i = 0; i < files.length; i++) {
-					editorSendFile(files[i]);	
+					editorSendFile(files[i], undefined, true);
 	            }
 	        },
 	        onBlur: function() {
@@ -1209,9 +1499,25 @@ function convEditorInit()
 		    	onReplyChange();
 		    }
 	    }
-	});
+	};
+
+	// Allow to insert only plain text in chats
+	if (convIsChat()) {
+		options.callbacks.onPaste = function (e) {
+	        var bufferText = ((e.originalEvent || e).clipboardData || window.clipboardData).getData('Text');
+	        e.preventDefault();
+	        document.execCommand('insertText', false, bufferText);
+	    };
+	}
+
+	options = fsApplyFilter('editor.options', options);
+
+	$('#body').summernote(options);
+	$('#editor_bottom_toolbar a[data-modal-applied="1"]').removeAttr('data-modal-applied');
 	var html = $('#editor_bottom_toolbar').html();
 	$('.note-statusbar').addClass('note-statusbar-toolbar form-inline').html(html);
+	// To init new modal links
+	initModals();
 
 	// Track changes to save draft
 	$("#to, #to_email, #cc, #bcc, #subject, #name, #phone").on('keyup keypress', function(event) {
@@ -1222,9 +1528,10 @@ function convEditorInit()
 	// select2 does not react on keyup or keypress
 	$(".recipient-select, .draft-changer").on('change', function(event) {
 		onReplyChange();
-		onReplyBlur(); 
+		onReplyBlur();
 	});
-		
+
+	fsDoAction('conv_editor_init');
 
 	// Autosave draft periodically
 	autosaveDraft();
@@ -1249,18 +1556,18 @@ function ajaxSetup()
 }
 
 function onReplyChange()
-{	
+{
 	// Mark draft as unsaved
 	if (fs_editor_change_timeout && fs_editor_change_timeout != -1) {
 		return;
-	}	
+	}
 
 	fs_editor_change_timeout = setTimeout(function(){
 		// Do not save note
 		/*if ($(".form-reply:first :input[name='is_note']:first").val()) {
 			return;
 		}*/
-	
+
 		$('.form-reply:first .note-actions .note-btn:first').removeClass('text-success');
 		fs_editor_change_timeout = null;
 		fs_reply_changed = true;
@@ -1273,7 +1580,7 @@ function onReplyBlur()
 	// If start saving draft immediately, then when Send Reply is clicked
 	// two ajax requests will be sent at the same time.
 	setTimeout(function() {
-		// Do not save if user clicked Send Reply button	
+		// Do not save if user clicked Send Reply button
 		if (fs_processing_send_reply) {
 			return;
 		}
@@ -1312,7 +1619,7 @@ function generateDummyId()
 }
 
 // Save file uploaded in editor
-function editorSendFile(file, attach) 
+function editorSendFile(file, attach, is_conv, editor_id)
 {
 	if (!file || typeof(file.type) == "undefined") {
 		return false;
@@ -1320,6 +1627,17 @@ function editorSendFile(file, attach)
 
 	var attachments_container = $(".attachments-upload:first");
 	var attachment_dummy_id = generateDummyId();
+	var route = '';
+
+	if (is_conv) {
+		route = 'conversations.upload';
+		editor_id = '#body';
+	} else {
+		route = 'uploads.upload';
+		if (typeof(editor_id) == "undefined" || !editor_id) {
+			editor_id = '#signature';
+		}
+	}
 
 	ajaxSetup();
 
@@ -1349,7 +1667,7 @@ function editorSendFile(file, attach)
 		data.append("attach", 0);
 	}
 	$.ajax({
-		url: laroute.route('conversations.upload'),
+		url: laroute.route(route),
 		data: data,
 		cache: false,
 		contentType: false,
@@ -1376,9 +1694,14 @@ function editorSendFile(file, attach)
 			}
 			if (attach) {
 				fs_reply_changed = true;
+
+				if (typeof(response.attachment_id) == "undefined" && typeof(response.url) != "undefined" && response.url) {
+					// Insert link to uploaded file into the editor
+					$(editor_id).summernote('pasteHTML', '<a href="'+response.url+'">'+file.name+'</a>');
+				}
 			} else {
 				// Embed image
-				$('#body').summernote('insertImage', response.url, function (image) {
+				$(editor_id).summernote('insertImage', response.url, function (image) {
 					var editor_width = $('.note-editable:first:visible').width();
 					if (image.width() > editor_width-85) {
 						image.css('width', editor_width-85);
@@ -1467,6 +1790,8 @@ function initRecipientSelector(custom_options, selector)
 
 	var result = initCustomerSelector(selector, options);
 
+	result = fsApplyFilter('conversation.recipient_selector', result, {selector:selector});
+
 	if (options.editable) {
 		result.on('select2:closing', function(e) {
 			var params = e.params;
@@ -1504,7 +1829,7 @@ function initRecipientSelector(custom_options, selector)
 		    		return;
 		    	}
 		    }
-			
+
 		    addSelect2Option(select, {
 		        id: value,
 		        text: value,
@@ -1513,10 +1838,12 @@ function initRecipientSelector(custom_options, selector)
 		});
 	}
 
+	fsDoAction('conversation.recipient_selector_initialized', {selector:selector});
+
 	return result;
 }
 
-function initReplyForm(load_attachments, init_customer_selector)
+function initReplyForm(load_attachments, init_customer_selector, is_new_conv)
 {
 	$(document).ready(function() {
 
@@ -1528,6 +1855,18 @@ function initReplyForm(load_attachments, init_customer_selector)
 		// Customer selector
 		if (typeof(init_customer_selector) != "undefined") {
 			initRecipientSelector();
+		}
+
+		// New conversation
+		if (typeof(is_new_conv) != "undefined") {
+			$('#to').on('select2:closing', function(e) {
+				var select = $(e.target);
+				if (select.val().length > 1) {
+					$('#multiple-conversations-wrap').removeClass('hidden');
+				} else {
+					$('#multiple-conversations-wrap').addClass('hidden');
+				}
+			});
 		}
 
 		// Show CC
@@ -1554,11 +1893,13 @@ function initReplyForm(load_attachments, init_customer_selector)
 
 		// Send reply, new conversation or note
 	    $(".btn-reply-submit").click(function(e) {
+	
 	    	// This is extra protection from double click on Send button
 	    	// DOM operation are slow sometimes
 	    	if (fs_processing_send_reply) {
 	    		return;
 	    	}
+
 	    	fs_processing_send_reply = true;
 
 	    	var button = $(this);
@@ -1571,45 +1912,57 @@ function initReplyForm(load_attachments, init_customer_selector)
 	    		return;
 	    	}
 
-	    	button.button('loading');
-
 	    	// If draft is being sent, we need to wait and send reply after draft has been saved.
 	    	if (fs_processing_save_draft) {
 	    		fs_send_reply_after_draft = true;
 	    		return;
 	    	}
 
-	    	data = form.serialize();
+	    	if (!fsApplyFilter('conversation.can_submit', true, {trigger: button, form: form})) {
+	    		fs_processing_send_reply = false;
+	    		return;
+	    	}
+
+	    	// For previous filter
+	    	if (!fs_send_reply_allowed) {
+	    		fs_processing_send_reply = false;
+	    		return;
+	    	}
+
+			data = form.serialize();
 	    	data += '&action=send_reply';
 
+	    	button.button('loading');
+
 			fsAjax(data, laroute.route('conversations.ajax'), function(response) {
-				if (typeof(response.status) != "undefined" && response.status == 'success') {
-					// Forget note
-					if (isNote()) {
-						forgetNote(getGlobalAttr('conversation_id'));
-					}
-					if (typeof(response.redirect_url) != "undefined") {
-						window.location.href = response.redirect_url;
+					if (typeof(response.status) != "undefined" && response.status == 'success') {
+						// Forget note
+						if (isNote()) {
+							fs_autosave_note = false;
+							forgetNote(getGlobalAttr('conversation_id'));
+						}
+						if (typeof(response.redirect_url) != "undefined") {
+							window.location.href = response.redirect_url;
+						} else {
+							window.location.href = '';
+						}
 					} else {
-						window.location.href = '';
+						showAjaxError(response);
+						button.button('reset');
 					}
-				} else {
-					showAjaxError(response);
+					loaderHide();
+					fs_processing_send_reply = false;
+				},
+				true,
+				function() {
+					showFloatingAlert('error', Lang.get("messages.ajax_error"));
+					loaderHide();
 					button.button('reset');
-				}
-				loaderHide();
-				fs_processing_send_reply = false;
-			}, 
-			true,
-			function() {
-				showFloatingAlert('error', Lang.get("messages.ajax_error"));
-				loaderHide();
-				button.button('reset');
-				fs_processing_send_reply = false;
-			});
+					fs_processing_send_reply = false;
+				});
 
 			e.preventDefault();
-		});
+		})
 	});
 }
 
@@ -1663,6 +2016,8 @@ function notificationsInit()
 }
 
 function getQueryParam(name, qs) {
+	var arrays_without_indexes = {};
+
 	if (typeof(qs) == "undefined") {
 		qs = document.location.search;
 	}
@@ -1673,7 +2028,52 @@ function getQueryParam(name, qs) {
         re = /[?&]?([^=]+)=([^&]*)/g;
 
     while (tokens = re.exec(qs)) {
-        params[decodeURIComponent(tokens[1])] = decodeURIComponent(tokens[2]);
+    	key = decodeURIComponent(tokens[1]);
+
+        // Arrays without indexes - []
+        if (/\[\]$/.test(key)) {
+        	if (typeof(arrays_without_indexes[key]) == "undefined") {
+        		arrays_without_indexes[key] = 0;
+        	} else {
+        		arrays_without_indexes[key]++;
+        	}
+        	parsed_key = /(.*)\[\]$/.exec(key);
+        	if (typeof(parsed_key[1]) != "undefined") {
+        		key = parsed_key[1]+'['+arrays_without_indexes[key]+']';
+        	}
+        }
+        params[key] = decodeURIComponent(tokens[2]);
+    }
+
+    // Process arrays
+    for (var param in params) {
+    	
+    	// Two dimentional
+    	var m = param.match(/^([^\[]+)\[([^\[]+)\]$/i);
+
+    	if (m && m.length) {
+    		if (typeof(params[m[1]]) == "undefined") {
+    			params[m[1]] = {};
+    		}
+    		if (typeof(params[m[1]]) == "object") {
+    			params[m[1]][m[2]] = params[param];
+    		}
+    	}
+
+    	// Three dimentional
+    	var m = param.match(/^([^\[]+)\[([^\[]+)\]\[([^\[]+)\]$/i);
+
+    	if (m && m.length) {
+    		if (typeof(params[m[1]]) == "undefined") {
+    			params[m[1]] = {};
+    		}
+    		if (typeof(params[m[1]]) == "object") {
+    			if (typeof(params[m[1]][m[2]]) == "undefined") {
+    				params[m[1]][m[2]] = {};
+    			}
+    			params[m[1]][m[2]][m[3]] = params[param];
+    		}
+    	}
     }
 
     if (typeof(params[name]) != "undefined") {
@@ -1728,7 +2128,12 @@ function triggerModal(a, params)
     	body = params.body;
     }
     var footer = a.attr('data-modal-footer');
-    var no_close_btn = a.attr('data-no-close-btn');
+    if (typeof(params.footer) != "undefined") {
+    	footer = params.footer;
+    }
+    if (typeof(params.no_close_btn) == "undefined") {
+    	params.no_close_btn = a.attr('data-no-close-btn');
+    }
     if (typeof(params.no_footer) == "undefined") {
     	params.no_footer = a.attr('data-modal-no-footer');
     }
@@ -1772,22 +2177,22 @@ function triggerModal(a, params)
     for (param in params) {
     	if (params[param] === true) {
     		params[param] = 'true';
-    	} else if (params[param] === true) {
+    	} else if (params[param] === false) {
     		params[param] = 'false';
     	}
     }
 
     var html = [
-    '<div class="modal '+(params.no_fade == 'true' ? '' : 'fade')+'" tabindex="-1" role="dialog" aria-labelledby="jsmodal-label" aria-hidden="true">',
+    '<div class="modal '+(params.no_fade == 'true' ? '' : 'fade')+'" tabindex="-1" role="dialog" aria-labelledby="jsmodal-label" aria-modal="true">',
         '<div class="modal-dialog '+modal_class+'">',
             '<div class="modal-content">',
                 '<div class="modal-header '+(params.no_header == 'true' ? 'hidden' : '')+'">',
-                    '<button type="button" class="close" data-dismiss="modal" aria-label="'+Lang.get("messages.close")+'"><span aria-hidden="true">&times;</span></button>',
+                    '<button type="button" class="close" data-dismiss="modal" aria-label="'+Lang.get("messages.close")+'"><span>&times;</span></button>',
                     '<h3 class="modal-title" id="jsmodal-label">'+title+'</h3>',
                 '</div>',
                 '<div class="modal-body '+(fit == 'true' ? 'modal-body-fit' : '')+'"><div class="text-center modal-loader"><img src="'+Vars.public_url+'/img/loader-grey.gif" width="31" height="31"/></div></div>',
                 '<div class="modal-footer '+(params.no_footer == 'true' ? 'hidden' : '')+'">',
-                    (no_close_btn == 'true' ? '': '<button type="button" class="btn btn-default" data-dismiss="modal">'+Lang.get("messages.close")+'</button>'),
+                    (params.no_close_btn == 'true' ? '': '<button type="button" class="btn btn-default" data-dismiss="modal">'+Lang.get("messages.close")+'</button>'),
                     footer,
                 '</div>',
             '</div>',
@@ -1801,6 +2206,10 @@ function triggerModal(a, params)
 
     modal.modal();
 
+    modal.on('hidden.bs.modal', function () {
+	    $(this).remove();
+	});
+
     if (body) {
     	var body_html = $(body).html();
     	if (!body_html) {
@@ -1811,7 +2220,7 @@ function triggerModal(a, params)
         	if (typeof(window[on_show]) == "function") {
         		window[on_show](modal);
         	} else if (typeof(on_show) == "function") {
-        		on_show(modal);
+        		on_show(modal, a);
         	}
         }
     } else {
@@ -1823,9 +2232,9 @@ function triggerModal(a, params)
 
 			        if (on_show) {
 			        	if (typeof(window[on_show]) == "function") {
-			        		window[on_show](modal);
+			        		window[on_show](modal, a);
 			        	} else if (typeof(on_show) == "function") {
-			        		on_show(modal);
+			        		on_show(modal, a);
 			        	}
 			        }
                 },
@@ -1885,17 +2294,55 @@ function viewMailboxInit()
 {
 	conversationPagination();
 	starConversationInit();
+	initMailboxToolbar();
+}
+
+function initMailboxToolbar()
+{
+	$(document).ready(function() {
+		// Empty trash
+		$(".mailbox-empty-trash").click(function(e) {
+			showModalDialog('#conversations-bulk-actions-delete-modal', {
+				on_show: function(modal) {
+					modal.children().find('.delete-conversation-ok:first').click(function(e) {
+						var button = $(this);
+						button.button('loading');
+
+						fsAjax(
+							{
+								action: 'empty_trash',
+								folder_id: getGlobalAttr('folder_id')
+							},
+							laroute.route('conversations.ajax'),
+							function(response) {
+								if (isAjaxSuccess(response)) {
+									location.reload();
+								} else {
+									modal.modal('hide');
+									showAjaxError(response);
+								}
+							}, true
+						);
+						e.preventDefault();
+					});
+				}
+			});
+			e.preventDefault();
+		});
+	});
 }
 
 function searchInit()
 {
 	$(document).ready(function() {
 		// Open all links in new window
-		$(".conv-row a").attr('target', '_blank');
+		//$(".conv-row a").attr('target', '_blank');
 		conversationPagination();
 		starConversationInit();
 
-		$(".sidebar-menu .menu-link a").click(function(e){
+		customersPagination();
+
+		$(".sidebar-menu .menu-link a").filter('[data-filter]').click(function(e){
 			var trigger = $(this);
 			var filter = trigger.attr('data-filter');
 			if (!trigger.parent().hasClass('active')) {
@@ -1927,57 +2374,154 @@ function searchInit()
 		initCustomerSelector($('#search-filter-customer'), {width: '100%'});
 
 		// Dates
-		$('#search-filters .input-date').flatpickr({allowInput: true})
+		$('#search-filters .input-date').flatpickr({allowInput: true});
+
+		$('#search-filters .filter-multiple').select2({
+			multiple: true,
+			tags: true
+			// Causes JS error on clear
+			//allowClear: true
+		});
 	});
+}
+
+function loadConversations(page, table, no_loader)
+{
+	var filter = null;
+	var params = {};
+	var sorting = {};
+
+	if ($('body:first').hasClass('body-search')) {
+		filter = {
+			q: getQueryParam('q'), // For search
+			f: getQueryParam('f') // For search
+		};
+	}
+	//var table = $(this).parents('.table-conversations:first');
+	if (typeof(table) == "undefined" || table === '') {
+		table = $(".table-conversations:first");
+	}
+	if (typeof(page) == "undefined" || page === '') {
+		page = table.attr('data-page');
+	}
+	if (typeof(no_loader) == "undefined") {
+		no_loader = false;
+	}
+	var datas = table.data();
+	for (data_name in datas) {
+		if (/^filter_/.test(data_name)) {
+			if (filter == null) {
+				filter = {};
+			}
+			filter[data_name.replace(/^filter_/, '')] = datas[data_name];
+		}
+	}
+
+	// Params
+	for (data_name in datas) {
+		if (/^param_/.test(data_name)) {
+			params[data_name.replace(/^param_/, '')] = datas[data_name];
+		}
+	}
+
+	// Sorting
+	for (data_name in datas) {
+		if (/^sorting_/.test(data_name)) {
+			sorting[data_name.replace(/^sorting_/, '')] = datas[data_name];
+		}
+	}
+
+	fsAjax(
+		{
+			action: 'conversations_pagination',
+			mailbox_id: getGlobalAttr('mailbox_id'),
+			folder_id: getGlobalAttr('folder_id'),
+			filter: filter,
+			params: params,
+			page: page,
+			sorting: sorting
+		},
+		laroute.route('conversations.ajax'),
+		function(response) {
+			if (typeof(response.status) != "undefined" && response.status == 'success') {
+				if (typeof(response.html) != "undefined") {
+					$(".table-conversations:first").replaceWith(response.html);
+					conversationPagination();
+					starConversationInit();
+					converstationBulkActionsInit();
+					convListSortingInit();
+					triggersInit();
+				}
+			} else {
+				showAjaxError(response);
+			}
+			loaderHide();
+		},
+		no_loader
+	);
+}
+
+function loadCustomers(page, table)
+{
+	var filter = null;
+	//var params = {};
+
+	if ($('body:first').hasClass('body-search')) {
+		filter = {
+			q: getQueryParam('q'), // For search
+			f: getQueryParam('f') // For search
+		};
+	}
+	if (typeof(table) == "undefined" || table === '') {
+		table = $(".table-customers:first");
+	}
+	if (typeof(page) == "undefined" || page === '') {
+		page = table.attr('data-page');
+	}
+	/*var datas = table.data();
+	for (data_name in datas) {
+		if (/^filter_/.test(data_name)) {
+			filter[data_name.replace(/^filter_/, '')] = datas[data_name];
+		}
+	}*/
+
+	fsAjax(
+		{
+			action: 'customers_pagination',
+			filter: filter,
+			//params: params,
+			page: page
+		},
+		laroute.route('customers.ajax'),
+		function(response) {
+			if (isAjaxSuccess(response)) {
+				if (typeof(response.html) != "undefined") {
+					table.replaceWith(response.html);
+					customersPagination();
+					initModals();
+				}
+			} else {
+				showAjaxError(response);
+			}
+			loaderHide();
+		}
+	);
 }
 
 function conversationPagination()
 {
 	$(".table-conversations .pager-nav").click(function(e){
-
-		var filter = null;
-
-		if ($('body:first').hasClass('body-search')) {
-			filter = {
-				q: getQueryParam('q'), // For search
-				f: getQueryParam('f') // For search
-			};
-		}
-		var table = $(this).parents('.table-conversations:first');
-
-		var datas = table.data();
-		for (data_name in datas) {
-			if (/^filter_/.test(data_name)) {
-				filter[data_name.replace(/^filter_/, '')] = datas[data_name];
-			}
-		}
-
-		fsAjax(
-			{
-				action: 'conversations_pagination',
-				mailbox_id: getGlobalAttr('mailbox_id'),
-				folder_id: getGlobalAttr('folder_id'),
-				filter: filter,
-				page: $(this).attr('data-page')
-			}, 
-			laroute.route('conversations.ajax'),
-			function(response) {
-				if (typeof(response.status) != "undefined" && response.status == 'success') {
-					if (typeof(response.html) != "undefined") {
-						$(".table-conversations:first").html(response.html);
-						conversationPagination();
-						starConversationInit();
-						triggersInit();
-					}
-				} else {
-					showAjaxError(response);
-				}
-				loaderHide();
-			}
-		);
-	
+		loadConversations($(this).attr('data-page'), $(this).parents('.table-conversations:first'));
 		e.preventDefault();
-	});	
+	});
+}
+
+function customersPagination()
+{
+	$(".table-customers .pager-nav").click(function(e){
+		loadCustomers($(this).attr('data-page'), $(this).parents('.table-customers:first'));
+		e.preventDefault();
+	});
 }
 
 // Change customer modal
@@ -1998,7 +2542,9 @@ function changeCustomerInit()
 				data: function (params) {
 					return {
 						q: params.term,
-						exclude_email: input.attr('data-customer_email')
+						exclude_email: input.attr('data-customer_email'),
+						search_by: 'all',
+						page: params.page
 						//use_id: true
 					};
 				}
@@ -2033,31 +2579,68 @@ function changeCustomerInit()
 				size: 'sm',
 				on_show: function(modal) {
 					modal.children().find('.change-customer-ok:first').click(function(e) {
-						fsAjax({
-								action: 'conversation_change_customer',
-								customer_email: $(this).attr('data-customer_email'),
-								conversation_id: getGlobalAttr('conversation_id')
-							}, 
-							laroute.route('conversations.ajax'), 
-							function(response) {
-								if (typeof(response.status) != "undefined" && response.status == 'success') {
-									if (typeof(response.redirect_url) != "undefined") {
-										window.location.href = response.redirect_url;
-									} else {
-										window.location.href = '';
-									}
-								} else {
-									showAjaxError(response);
-									loaderHide();
-								}
-							}
-						);
+						conversationChangeCustomer($(this).attr('data-customer_email'));
 					});
 				}
 			});
 		    e.preventDefault();
 		});
+
+		$("#change-customer-create-trigger a:first").click(function(e){
+			$('#change-customer-create').removeClass('hidden');
+			$(this).hide();
+			e.preventDefault();
+		});
+
+		$("#change-customer-create form:first").submit(function(e){
+			e.preventDefault();
+		});
+
+		$("#change-customer-create button:first").click(function(e){
+			var button = $(this);
+
+			button.button('loading');
+
+			var data = button.parents('form:first').serialize();
+			data += '&action=create';
+
+			fsAjax(data,
+				laroute.route('customers.ajax'),
+				function(response) {
+					showAjaxResult(response);
+
+					if (typeof(response.status) != "undefined" && response.status == 'success') {
+						conversationChangeCustomer(response.email);
+					}
+					
+					ajaxFinish();
+				}
+			);
+		});
 	});
+}
+
+function conversationChangeCustomer(email)
+{
+	fsAjax({
+			action: 'conversation_change_customer',
+			customer_email: email,
+			conversation_id: getGlobalAttr('conversation_id')
+		},
+		laroute.route('conversations.ajax'),
+		function(response) {
+			if (typeof(response.status) != "undefined" && response.status == 'success') {
+				if (typeof(response.redirect_url) != "undefined") {
+					window.location.href = response.redirect_url;
+				} else {
+					window.location.href = '';
+				}
+			} else {
+				showAjaxError(response);
+				loaderHide();
+			}
+		}
+	);
 }
 
 // Move conversation modal
@@ -2072,9 +2655,54 @@ function initMoveConv()
 			fsAjax({
 					action: 'conversation_move',
 					mailbox_id: $('.move-conv-mailbox-id:visible:first').val(),
+					mailbox_email: $('.move-conv-mailbox-email:visible:first').val(),
+					conversation_id: getGlobalAttr('conversation_id'),
+					folder_id: getQueryParam('folder_id')
+				},
+				laroute.route('conversations.ajax'),
+				function(response) {
+					showAjaxResult(response);
+					if (isAjaxSuccess(response)) {
+						if (typeof(response.redirect_url) != "undefined" && response.redirect_url) {
+							window.location.href = response.redirect_url;
+						} else {
+							window.location.href = '';
+						}
+					}
+					ajaxFinish();
+				}
+			);
+		});
+
+		$(".move-conv-mailbox-email:first").on('keyup keypress', function(e){
+			if ($(this).val()) {
+				$(".move-conv-mailbox-id:first").attr('disabled', 'disabled');
+			} else {
+				$(".move-conv-mailbox-id:first").removeAttr('disabled');
+			}
+		});
+	});
+}
+
+// Move conversation modal
+function initMergeConv()
+{
+	$(document).ready(function() {
+		initTooltips();
+
+		initMergeConvSelect();
+
+		$(".btn-merge-conv:visible:first").click(function(e){
+			var button = $(this);
+
+			button.button('loading');
+
+			fsAjax({
+					action: 'conversation_merge',
+					merge_conversation_id: $('.conv-merge-id:checked').val(),
 					conversation_id: getGlobalAttr('conversation_id')
-				}, 
-				laroute.route('conversations.ajax'), 
+				},
+				laroute.route('conversations.ajax'),
 				function(response) {
 					showAjaxResult(response);
 					if (isAjaxSuccess(response)) {
@@ -2083,7 +2711,45 @@ function initMoveConv()
 					ajaxFinish();
 				}
 			);
+
+			e.preventDefault();
 		});
+
+		$(".btn-merge-search:visible:first").click(function(e){
+			var button = $(this);
+
+			button.button('loading');
+
+			fsAjax({
+					action: 'merge_search',
+					number: $('.merge-conv-number:visible:first').val(),
+				},
+				laroute.route('conversations.ajax'),
+				function(response) {
+					showAjaxResult(response);
+					if (isAjaxSuccess(response) && response.html) {
+						$('.conv-merge-search-result:first td:first').html(response.html);
+						$('.conv-merge-search-result:first').removeClass('hidden');
+						initTooltips();
+						initMergeConvSelect();
+					} else {
+						if ($('.conv-merge-search-result:first .conv-merge-id').is(':checked')) {
+							$('.btn-merge-conv:visible:first').attr('disabled', 'disabled');
+						}
+						$('.conv-merge-search-result:first td:first').html(response.html);
+						$('.conv-merge-search-result:first').addClass('hidden');
+					}
+					ajaxFinish();
+				}
+			);
+		});
+	});
+}
+
+function initMergeConvSelect()
+{
+	$('.conv-merge-id').click(function() {
+		$('.btn-merge-conv:visible:first').removeAttr('disabled');
 	});
 }
 
@@ -2137,7 +2803,8 @@ function initCustomerSelector(input, custom_options)
 					use_id: use_id,
 					search_by: search_by,
 					show_fields: show_fields,
-					allow_non_emails: allow_non_emails
+					allow_non_emails: allow_non_emails,
+					page: params.page
 				};
 			}/*,
 			beforeSend: function(){
@@ -2174,7 +2841,7 @@ function initCustomerSelector(input, custom_options)
 				    }
 				}
 			    // Check if select already has such option
-			    var data = this.$element.select2('data');
+			    var data = this.select2('data');
 			    for (i in data) {
 			    	if (data[i].id == params.term) {
 			    		return null;
@@ -2185,7 +2852,7 @@ function initCustomerSelector(input, custom_options)
 					text: params.term,
 					newOption: true
 			    }
-			},
+			}.bind(input),
 			templateResult: function (data) {
 			    var $result = $("<span></span>");
 
@@ -2240,7 +2907,7 @@ function showModalDialog(body, options)
 		options = {};
 	}
 	options = Object.assign(standard_options, options);
-	
+
 	triggerModal(null, options);
 }
 
@@ -2271,7 +2938,7 @@ function userProfileInit()
 			{
 				action: 'send_invite',
 				user_id: getGlobalAttr('user_id')
-			}, 
+			},
 			laroute.route('users.ajax'),
 			function(response) {
 				if (typeof(response.status) != "undefined" && response.status == 'success') {
@@ -2287,7 +2954,7 @@ function userProfileInit()
 			},
 			true
 		);
-	
+
 		e.preventDefault();
 	});
 
@@ -2315,7 +2982,7 @@ function userProfileInit()
 						{
 							action: 'reset_password',
 							user_id: getGlobalAttr('user_id')
-						}, 
+						},
 						laroute.route('users.ajax'),
 						function(response) {
 							showAjaxResult(response);
@@ -2327,7 +2994,7 @@ function userProfileInit()
 		});
 
 		e.preventDefault();
-	});	
+	});
 
 	// Delete profile photo
 	$("#user-photo-delete").click(function(e) {
@@ -2352,12 +3019,12 @@ function userProfileInit()
 						{
 							action: 'delete_photo',
 							user_id: getGlobalAttr('user_id')
-						}, 
+						},
 						laroute.route('users.ajax'),
 						function(response) {
 							$('#user-profile-photo').remove();
 							button.button('reset');
-						}, 
+						},
 						true
 					);
 				});
@@ -2393,10 +3060,10 @@ function userProfileInit()
 					modal.modal('hide');
 
 					fsAjax(
-						data, 
+						data,
 						laroute.route('users.ajax'),
 						function(response) {
-							if (typeof(response.status) != "undefined" && response.status == "success") {
+							if (isAjaxSuccess(response)) {
 								window.location.href = laroute.route('users');
 								return;
 							} else {
@@ -2415,7 +3082,7 @@ function userProfileInit()
 function showAjaxResult(response)
 {
 	loaderHide();
-	
+
 	if (typeof(response.status) != "undefined" && response.status == 'success') {
 		if (typeof(response['msg_success']) != "undefined") {
 			showFloatingAlert('success', response['msg_success']);
@@ -2440,11 +3107,18 @@ function polycastInit()
 
 	if (getGlobalAttr('conversation_id')) {
 		poly_data_closures.push(function(data) {
-			data.conversation_id = getGlobalAttr('conversation_id');
 			if (getReplyFormMode() == 'reply') {
 				data.replying = 1;
 			} else {
 				data.replying = 0;
+			}
+			if (!fs_prev_focus && document.hasFocus()) {
+				data.conversation_view_focus = 1;
+			}
+			fs_prev_focus = document.hasFocus();
+			// If conversation_id is passed it means that user is viewing the converation
+			if (document.hasFocus() || data.replying) {
+				data.conversation_id = getGlobalAttr('conversation_id');
 			}
 			return data;
 		});
@@ -2483,19 +3157,19 @@ function polycastInit()
         */
         // console.log(data);
         // console.log(event);
-        
+
         if (typeof(event.data) != "undefined") {
         	// Show notification in the menu
-        	if (typeof(event.data.web) != "undefined" 
-	        	&& typeof(event.data.web.html) != "undefined" 
+        	if (typeof(event.data.web) != "undefined"
+	        	&& typeof(event.data.web.html) != "undefined"
 	        	&& event.data.web.html
 	        ) {
 	        	showMenuNotification(event.data.web.html);
 	        }
 
 	        // Browser push-notification
-	        if (typeof(event.data.browser) != "undefined" 
-	        	&& typeof(event.data.browser.text) != "undefined" 
+	        if (typeof(event.data.browser) != "undefined"
+	        	&& typeof(event.data.browser.text) != "undefined"
 	        	&& event.data.browser.text
 	        ) {
 	        	showBrowserNotification(event.data.browser.text, event.data.browser.url);
@@ -2507,8 +3181,8 @@ function polycastInit()
 
 	// Show who is viewing a conversation or replying.
     channel.on('App\\Events\\RealtimeConvView', function(data, event){
-        
-        if (!data 
+
+        if (!data
         	|| data.conversation_id != getGlobalAttr('conversation_id')
         	// Skip own notifications
         	|| data.user_id == getGlobalAttr('auth_user_id')
@@ -2580,7 +3254,7 @@ function polycastInit()
 
 	// User finished viewing conversation.
     channel.on('App\\Events\\RealtimeConvViewFinish', function(data, event) {
-        if (!data 
+        if (!data
         	|| data.conversation_id != getGlobalAttr('conversation_id')
         	// Skip own notifications
         	|| data.user_id == getGlobalAttr('auth_user_id')
@@ -2592,11 +3266,139 @@ function polycastInit()
 	    $('#conv-viewers .viewer-'+data.user_id+':first').fadeOut();
     });
 
+    // Show new conversation threads
+    var conversation_id = getGlobalAttr('conversation_id');
+    if (conversation_id) {
+	    var channel = poly.subscribe('conv.'+conversation_id);
+
+	    channel.on('App\\Events\\RealtimeConvNewThread', function(data, event){
+	        if (!data
+	        	|| typeof(data.conversation_id) == "undefined"
+	        	|| data.conversation_id != getGlobalAttr('conversation_id')
+	        	// Skip own notifications
+	        	|| data.user_id == getGlobalAttr('auth_user_id')
+	        ) {
+	        	return;
+		    }
+
+		    if (typeof(data.thread_html) != "undefined" && data.thread_html && !$('#thread-'+data.thread_id).length) {
+		    	var container = $('#conv-layout-main .thread-type-new');
+		    	if (container.length) {
+		    		container.prepend(data.thread_html);
+		    		$('#conv-layout-main .thread-type-new:first .view-new-trigger').text(Lang.get("messages.view_new_messages", {'count': $('#conv-layout-main .thread-type-new .thread').length }));
+		    	} else {
+		    		$('#conv-layout-main').prepend('<div class="thread thread-type-new">'+data.thread_html+'<a href="" class="view-new-trigger">'+Lang.get("messages.view_new_message")+'</a></div>');
+		    		$('#conv-layout-main .thread-type-new:first .view-new-trigger').click(function(e) {
+		    			var container = $(this).parent();
+		    			$(this).remove();
+		    			$('#conv-layout-main').prepend(container.html());
+		    			container.remove();
+		    			e.preventDefault();
+		    		});
+		    		flashElement($('#conv-layout-main .thread-type-new:first'));
+	    			$.titleAlert('✉ '+Lang.get("messages.new_message"), {
+					    requireBlur: true,
+					    stopOnFocus: true,
+					    interval: 600
+					});
+		    		if (convIsChat()) {
+		    			setTimeout(function() {
+							$('#conv-layout-main .thread-type-new:first .view-new-trigger').click();
+					    }, 3000);
+		    		}
+		    	}
+		    }
+
+		    // Update assignee if needed
+		    if (typeof(data.conversation_user_id) != "undefined" && data.conversation_user_id 
+		    	&& parseInt(data.conversation_user_id) != convGetUserId()
+		    ) {
+		    	$('#conv-assignee .conv-user li.active').removeClass('active');
+		    	var a = $("#conv-assignee .conv-user li a[data-user_id='"+data.conversation_user_id+"']");
+		    	a.parent().addClass('active');
+		    	$('#conv-assignee .conv-info-val span:first').text(a.text());
+		    	flashElement($('#conv-assignee'));
+		    }
+
+		    // Update status if needed
+		    if (typeof(data.conversation_status) != "undefined" && data.conversation_status 
+		    	&& parseInt(data.conversation_status) != convGetStatus()
+		    ) {
+		    	$('#conv-status .conv-status li.active').removeClass('active');
+		    	var a = $("#conv-status .conv-status li a[data-status='"+data.conversation_status+"']");
+		    	a.parent().addClass('active');
+		    	$('#conv-status .conv-info-val span:first').text(a.text());
+		    	// Update class
+		    	if (data.conversation_status_class) {
+					$.each($('#conv-status .btn'), function(index, btn) {
+						var classes = $(btn).attr('class').split(/\s+/); 
+						$.each(classes, function(index, item_class) {
+							if (item_class.indexOf('btn-') != -1 && item_class != 'btn-light') {
+								$(btn).removeClass(item_class);
+							}
+						});   
+					});
+		    	
+		    		$('#conv-status .btn').addClass('btn-'+data.conversation_status_class);
+		    	}
+		    	// Update icon
+		    	if (data.conversation_status_icon) {
+		    		$('#conv-status .btn:first .glyphicon').attr('class', 'glyphicon').addClass('glyphicon-'+data.conversation_status_icon);
+		    	}
+		    	flashElement($('#conv-status'));
+		    }
+	    });
+	}
+
+	// Refresh folders
+    var mailbox_id = getGlobalAttr('mailbox_id');
+    var el_folders = $('#folders');
+    if (mailbox_id && el_folders.length) {
+	    var channel = poly.subscribe('mailbox.'+mailbox_id);
+
+	    channel.on('App\\Events\\RealtimeMailboxNewThread', function(data, event){
+	        if (!data || typeof(data.mailbox_id) == "undefined" || data.mailbox_id != mailbox_id) {
+	        	return;
+		    }
+
+		    if (typeof(data.folders_html) != "undefined" && data.folders_html) {
+		    	var folder_id = el_folders.children('li.active:first').attr('data-folder_id');
+		    	el_folders.html(data.folders_html);
+		    	el_folders.children('li[data-folder_id="'+folder_id+'"]').addClass('active');
+		    }
+
+		    // If there are no conversations selected refresh conversations table
+		    if ($(".table-conversations:first").length && !getSelectedConversations().length) {
+		    	loadConversations('', '', true);
+		    }
+	    });
+	}
+
     // at any point you can disconnect
     //poly.disconnect();
 
     // and when you disconnect, you can again at any point reconnect
     //poly.reconnect();
+}
+
+function convIsChat()
+{
+	return $('#conv-layout').hasClass('conv-type-chat');
+}
+
+function convGetUserId()
+{
+	return parseInt($('#conv-assignee .conv-user li.active a:first').attr('data-user_id'));
+}
+
+function convGetStatus()
+{
+	return parseInt($('#conv-status .conv-status li.active a:first').attr('data-status'));
+}
+
+function flashElement(el)
+{
+	el.fadeOut(0).fadeIn(2000);
 }
 
 // Show notification in the menu
@@ -2686,10 +3488,10 @@ function webNotificationsInit()
 			{
 				action: 'web_notifications',
 				wn_page: wn_page
-			}, 
+			},
 			laroute.route('users.ajax'),
 			function(response) {
-				if (typeof(response.status) != "undefined" && response.status == "success") {
+				if (isAjaxSuccess(response)) {
 					$(response.html).insertBefore(button.parent());
 				} else {
 					showAjaxError(response);
@@ -2719,10 +3521,10 @@ function webNotificationsInit()
 		fsAjax(
 			{
 				action: 'mark_notifications_as_read'
-			}, 
+			},
 			laroute.route('users.ajax'),
 			function(response) {
-				if (typeof(response.status) != "undefined" && response.status == "success") {
+				if (isAjaxSuccess(response)) {
 					mark_button.remove();
 					$('.web-notifications-count:first').addClass('hidden');
 					$('.web-notification.is-unread').removeClass('is-unread');
@@ -2742,7 +3544,7 @@ function webNotificationsInit()
 	// $('.web-notifications:first .web-notification a').click(function(e) {
 	// 	$(this).parent().removeClass('is-unread');
 	// });
-	
+
 }
 
 function initSystemStatus()
@@ -2769,10 +3571,10 @@ function initSystemStatus()
 					fsAjax(
 						{
 							action: 'update'
-						}, 
+						},
 						laroute.route('system.ajax'),
 						function(response) {
-							if (typeof(response.status) != "undefined" && response.status == "success") {
+							if (isAjaxSuccess(response)) {
 								showAjaxResult(response);
 								window.location.href = '';
 							} else if (response.msg) {
@@ -2799,10 +3601,10 @@ function initSystemStatus()
 		fsAjax(
 			{
 				action: 'check_updates'
-			}, 
+			},
 			laroute.route('system.ajax'),
 			function(response) {
-				if (typeof(response.status) != "undefined" && response.status == "success") {
+				if (isAjaxSuccess(response)) {
 					if (typeof(response.new_version_available) != "undefined" && response.new_version_available) {
 						// There are updates
 						window.location.href = '';
@@ -2847,6 +3649,15 @@ function maybeShowConnectionRestored()
 	fs_connection_errors = 0;
 }
 
+function isNewConversation()
+{
+	if ($('#conv-layout-main .thread:first').length == 0) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
 /**
  * Save draft automatically, on reply change or on click.
  * Validation is not needed.
@@ -2871,15 +3682,11 @@ function saveDraft(reload_page, no_loader)
 	}
 
 	var button = form.children().find('.note-actions .note-btn:first');
-	var new_conversation = false;
+	// Are we saving a draft of a new conversation
+	var new_conversation = isNewConversation();
 
 	if (typeof(no_loader) == "undefined") {
 		no_loader = false;
-	}
-
-	// Are we sasving a draft of a new conversation
-	if ($('#conv-layout-main .thread:first').length == 0) {
-		new_conversation = true;
 	}
 
 	// Do not save unchanged draft
@@ -2914,7 +3721,7 @@ function saveDraft(reload_page, no_loader)
 					} else {
 						saved_text.show();
 					}
-					
+
 					setTimeout(function() {
 						saved_text.fadeOut(1000);
 				    }, 4000);
@@ -2925,6 +3732,7 @@ function saveDraft(reload_page, no_loader)
 					form.children(':input[name="thread_id"]').val(response.thread_id);
 					form.children(':input[name="customer_id"]').val(response.customer_id);
 					$('.conv-new-number:first').text(response.number);
+					$('body:first').attr('data-conversation_id', response.conversation_id);
 
 					// Set URL if this is a new conversation
 					if (new_conversation) {
@@ -2937,7 +3745,7 @@ function saveDraft(reload_page, no_loader)
 		}
 		loaderHide();
 		finishSaveDraft();
-	}, 
+	},
 	no_loader,
 	function() {
 		showFloatingAlert('error', Lang.get("messages.ajax_error"));
@@ -2946,7 +3754,7 @@ function saveDraft(reload_page, no_loader)
 	});
 }
 
-// If draft is being sent and user clicks Send reply, 
+// If draft is being sent and user clicks Send reply,
 // we need to wait and send reply after draft has been saved.
 function finishSaveDraft()
 {
@@ -2960,8 +3768,18 @@ function finishSaveDraft()
 function setUrl(url)
 {
 	if (window.history && typeof(window.history.replaceState) != "undefined") {
-        window.history.replaceState({isMine:true}, 'title',  url);
+		try {
+			// Catch an error if by some reason current protocol and protocol in url are different
+        	window.history.replaceState({isMine:true}, 'title', url);
+        } catch (e) {
+        	// Do nothing
+        }
     }
+}
+
+function goBack()
+{
+	window.history.go(-1);
 }
 
 // Show forward conversation form
@@ -2979,19 +3797,55 @@ function forwardConversation(e)
 	showForwardForm({}, reply_block);
 
 	// Load attachments
-	loadAttachments();
+	loadAttachments(true);
 }
 
-// Load attachments for the draft of a new conversation of draft of the forward
-function loadAttachments()
+// Follow / unfollow conversation
+function followConversation(action)
+{
+	var conversation_id = getGlobalAttr('conversation_id');
+	fsAjax(
+		{
+			action: action,
+			conversation_id: conversation_id,
+		},
+		laroute.route('conversations.ajax'),
+		function(response) {
+			if (isAjaxSuccess(response)) {
+				var opposite = '';
+				if (action == 'follow') {
+					opposite = 'unfollow';
+				} else {
+					opposite = 'follow';
+				}
+				$('.conv-follow[data-follow-action="'+action+'"]').addClass('hidden');
+				$('.conv-follow[data-follow-action="'+opposite+'"]').removeClass('hidden');
+				fsDoAction('conversation.'+action, {
+					user_id: getGlobalAttr('auth_user_id'),
+					conversation_id: conversation_id
+				});
+			}
+			showAjaxResult(response);
+		}, true
+	);
+}
+
+// Load attachments for the draft of a new conversation or draft of the forward
+function loadAttachments(is_forwarding)
 {
 	var attachments_container = $(".attachments-upload:first");
 	var conversation_id = getGlobalAttr('conversation_id');
+
+	if (typeof(is_forwarding) == "undefined") {
+		is_forwarding = false;
+	}
+
 	if (!attachments_container.hasClass('forward-attachments-loaded') && conversation_id) {
 		fsAjax({
 				action: 'load_attachments',
-				conversation_id: conversation_id
-			}, 
+				conversation_id: conversation_id,
+				is_forwarding: is_forwarding
+			},
 			laroute.route('conversations.ajax'),
 			function(response) {
 				if (typeof(response.status) != "undefined" && response.status == 'success'
@@ -3016,6 +3870,8 @@ function showForwardForm(data, reply_block)
 	}
 	reply_block.children().find(":input[name='subtype']:first").val(Vars.subtype_forward);
 	reply_block.children().find(":input[name='to']:first").addClass('hidden');
+	reply_block.children().find("#cc").val('').trigger('change');
+	reply_block.children().find("#bcc").val('').trigger('change');
 	reply_block.children().find(":input[name='to_email']:first").removeClass('hidden').removeClass('parsley-exclude').next('.select2:first').show();
 	reply_block.addClass('inactive');
 	reply_block.addClass('conv-forward-block');
@@ -3031,7 +3887,7 @@ function showForwardForm(data, reply_block)
 
 	// Show recipient selector
 	initRecipientSelector({
-		maximumSelectionLength: 1
+		//maximumSelectionLength: 1
 	}, $('#to_email:not(.select2-hidden-accessible)'));
 }
 
@@ -3043,13 +3899,13 @@ function editDraft(button)
 	fsAjax({
 			action: 'load_draft',
 			thread_id: thread_container.attr('data-thread_id')
-		}, 
+		},
 		laroute.route('conversations.ajax'),
 		function(response) {
 			loaderHide();
 			if (typeof(response.status) != "undefined" && response.status == 'success') {
 				//response.data.is_note = '';
-				showReplyForm(response.data);
+				showReplyForm(response.data, -50);
 				if (response.data.is_forward == '1') {
 					showForwardForm(response.data);
 				}
@@ -3057,7 +3913,7 @@ function editDraft(button)
 				$('.thread.thread-type-draft').show();
 				// Hide current draft
 				thread_container.hide();
-				$("html, body").animate({ scrollTop: $('.navbar:first').height() }, "slow");
+				//$("html, body").animate({ scrollTop: $('.navbar:first').height() }, "slow");
 			} else {
 				showAjaxError(response);
 			}
@@ -3069,7 +3925,7 @@ function editDraft(button)
 // - draft of an old reply
 // - current reply
 // - current note
-// 
+//
 // If thread_id is passed, it means we are discarding an old reply draft
 function discardDraft(thread_id)
 {
@@ -3092,6 +3948,7 @@ function discardDraft(thread_id)
 					setReplyBody('');
 					forgetNote();
 					modal.modal('hide');
+					$('#conv-subject').removeClass('action-visible');
 				});
 			}
 		});
@@ -3102,18 +3959,25 @@ function discardDraft(thread_id)
 		thread_id = $('.form-reply :input[name="thread_id"]').val();
 	}
 
+	// We are creating a conversation from thread
+	var from_thread_id = '';
+	if (!thread_id && getQueryParam('from_thread_id')) {
+		from_thread_id = getQueryParam('from_thread_id');
+	}
+
 	showModalDialog(confirm_html, {
 		on_show: function(modal) {
 			modal.children().find('.discard-draft-confirm:first').click(function(e) {
 				fsAjax(
 					{
 						action: 'discard_draft',
-						thread_id: thread_id
-					}, 
+						thread_id: thread_id,
+						from_thread_id: from_thread_id
+					},
 					laroute.route('conversations.ajax'),
 					function(response) {
 						modal.modal('hide');
-						if (typeof(response.status) != "undefined" && response.status == "success") {
+						if (isAjaxSuccess(response)) {
 							if (typeof(response.redirect_url) != "undefined" && response.redirect_url) {
 								window.location.href = response.redirect_url;
 								return;
@@ -3131,6 +3995,7 @@ function discardDraft(thread_id)
 								$(".conv-reply-block :input[name='cc']:first").val('');
 								$(".conv-reply-block :input[name='bcc']:first").val('');
 								setReplyBody('');
+								$('#conv-subject').removeClass('action-visible');
 							}
 						} else {
 							showAjaxError(response);
@@ -3151,7 +4016,7 @@ function editThread(button)
 	fsAjax({
 			action: 'load_edit_thread',
 			thread_id: thread_container.attr('data-thread_id')
-		}, 
+		},
 		laroute.route('conversations.ajax'),
 		function(response) {
 			loaderHide();
@@ -3188,7 +4053,7 @@ function saveThreadEdit(trigger)
 			action: 'save_edit_thread',
 			thread_id: thread_container.attr('data-thread_id'),
 			body: thread_container.find('.thread-editor:first').val()
-		}, 
+		},
 		laroute.route('conversations.ajax'),
 		function(response) {
 			loaderHide();
@@ -3232,6 +4097,12 @@ function hideReplyEditor()
 	$(".conv-action").removeClass('inactive');
 }
 
+function hideActionBlocks()
+{
+	$(".conv-action-block").addClass('hidden');
+	$("#conv-subject").removeClass('action-visible');
+}
+
 function getReplyBody(text)
 {
 	return $("#body").val();
@@ -3239,14 +4110,34 @@ function getReplyBody(text)
 
 function setReplyBody(text)
 {
-	$(".conv-reply-block :input[name='body']:first").val(text);
 	$('#body').summernote("code", text);
+	if (text == fs_body_default) {
+		text = '';
+	}
+	$(".conv-reply-block :input[name='body']:first").val(text);
 }
 
 // Set text in summernote editor
 function setSummernoteText(jtextarea, text)
 {
 	jtextarea.summernote("code", text);
+}
+
+function convListSortingInit()
+{
+	$('.conv-col-sort').click(function(event) {
+		var table = $(this).parents('.table-conversations:first');
+		table.attr('data-sorting_sort_by', $(this).attr('data-sort-by'));
+		var order = $(this).attr('data-order');
+		if (order == 'asc') {
+			order = 'desc';
+		} else {
+			order = 'asc';
+		}
+		table.attr('data-sorting_order', order);
+
+		loadConversations('', '', true);
+	});
 }
 
 // Star/unstar processing from the list or conversation
@@ -3274,10 +4165,10 @@ function starConversationInit()
 				action: 'star_conversation',
 				conversation_id: conversation_id,
 				sub_action: sub_action
-			}, 
+			},
 			laroute.route('conversations.ajax'),
 			function(response) {
-				if (typeof(response.status) != "undefined" && response.status == "success") {
+				if (isAjaxSuccess(response)) {
 					// In the list there are two stars for desktop and monile
 					if (trigger.parents('.conv-row:first').length) {
 						trigger = trigger.parents('.conv-row:first').children().find('.conv-star');
@@ -3300,14 +4191,7 @@ function starConversationInit()
 function conversationsTableInit()
 {
 	converstationBulkActionsInit();
-
-	$(function() {
-		$('.toggle-all:checkbox').on('click', function () {
-			$('.conv-checkbox:checkbox').prop('checked', this.checked).trigger('change');
-		});
-	});
-
-	
+	convListSortingInit();
 
 	if ("ontouchstart" in window)
 	{
@@ -3328,23 +4212,28 @@ function conversationsTableInit()
 	}
 }
 
+// Get ids of the selected conversations
+function getSelectedConversations(checkboxes)
+{
+	if (typeof(checkboxes) == "undefined") {
+		checkboxes = $('.conv-checkbox');
+	}
+
+	var conv_ids = [];
+	checkboxes.each(function() {
+		if ($(this).prop('checked')) {
+			conv_ids.push($(this).val());
+		}
+	});
+
+	return conv_ids;
+}
+
 function converstationBulkActionsInit()
 {
 	$(document).ready(function() {
 		var checkboxes = $('.conv-checkbox');
 		var bulk_buttons = $('#conversations-bulk-actions');
-
-		function getConversationsIds()
-		{
-			var conv_ids = [];
-			checkboxes.each(function() {
-				if ($(this).prop('checked')) {
-					conv_ids.push($(this).val());
-				}
-			});
-
-			return conv_ids;
-		}
 
 		$(bulk_buttons).show();
 		if ($(bulk_buttons).offset()) {
@@ -3380,46 +4269,48 @@ function converstationBulkActionsInit()
 		$(".conv-user li > a", bulk_buttons).click(function(e) {
 			var user_id = $(this).data('user_id');
 
-			var conv_ids = getConversationsIds();
+			var conv_ids = getSelectedConversations(checkboxes);
 
 			fsAjax(
 				{
 					action: 'bulk_conversation_change_user',
 					conversation_id: conv_ids,
 					user_id: user_id
-				}, 
+				},
 				laroute.route('conversations.ajax'),
 				function(response) {
-					if (typeof(response.status) != "undefined" && response.status == "success") {
+					if (isAjaxSuccess(response)) {
 						location.reload();
 					} else {
 						showAjaxError(response);
 					}
 				}, true
 			);
+			e.preventDefault();
 		});
 
 		// Change conversation status
 		$(".conv-status li > a", bulk_buttons).click(function(e) {
 			var status = $(this).data('status');
 
-			var conv_ids = getConversationsIds();
+			var conv_ids = getSelectedConversations(checkboxes);
 
 			fsAjax(
 				{
 					action: 'bulk_conversation_change_status',
 					conversation_id: conv_ids,
 					status: status
-				}, 
+				},
 				laroute.route('conversations.ajax'),
 				function(response) {
-					if (typeof(response.status) != "undefined" && response.status == "success") {
+					if (isAjaxSuccess(response)) {
 						location.reload();
 					} else {
 						showAjaxError(response);
 					}
 				}, true
 			);
+			e.preventDefault();
 		});
 
 		// Delete conversation
@@ -3430,16 +4321,16 @@ function converstationBulkActionsInit()
 					modal.children().find('.delete-conversation-ok:first').click(function(e) {
 						modal.modal('hide');
 
-						var conv_ids = getConversationsIds();
+						var conv_ids = getSelectedConversations(checkboxes);
 
 						fsAjax(
 							{
 								action: 'bulk_delete_conversation',
 								conversation_id: conv_ids,
-							}, 
+							},
 							laroute.route('conversations.ajax'),
 							function(response) {
-								if (typeof(response.status) != "undefined" && response.status == "success") {
+								if (isAjaxSuccess(response)) {
 									location.reload();
 								} else {
 									showAjaxError(response);
@@ -3450,6 +4341,7 @@ function converstationBulkActionsInit()
 					});
 				}
 			});
+			e.preventDefault();
 		});
 
 		$('.conv-checkbox-clear', bulk_buttons).click(function(e) {
@@ -3459,6 +4351,9 @@ function converstationBulkActionsInit()
 			$('table.table-conversations tr').removeClass('selected');
 		});
 
+		$('.toggle-all:checkbox').on('click', function () {
+			$('.conv-checkbox:checkbox').prop('checked', this.checked).trigger('change');
+		});
 	});
 }
 
@@ -3470,6 +4365,10 @@ function switchToNote()
 
 function rememberNote()
 {
+	if (!fs_autosave_note) {
+		return;
+	}
+	
 	var conversation_id = getGlobalAttr('conversation_id');
 	if (!conversation_id) {
 		return;
@@ -3534,7 +4433,7 @@ function maybeShowDraft()
 	fsAjax({
 			action: 'load_draft',
 			thread_id: thread_id
-		}, 
+		},
 		laroute.route('conversations.ajax'),
 		function(response) {
 			loaderHide();
@@ -3564,20 +4463,28 @@ function forgetNote(conversation_id)
 
 function saveNoteToStorage(conversation_notes)
 {
-	localStorageSet('conversation_notes', JSON.stringify(conversation_notes));
+	localStorageSetObject('conversation_notes', conversation_notes);
+}
+
+function localStorageSetObject(key, obj) {
+	localStorageSet(key, JSON.stringify(obj));
 }
 
 function loadNotesFromStorage(conversation_id)
 {
-	var conversation_notes_json = localStorageGet('conversation_notes');
-	
-	if (conversation_notes_json) {
-		var conversation_notes = {};
+	return localStorageGetObject('conversation_notes');
+}
+
+function localStorageGetObject(key) {
+	var json = localStorageGet(key);
+
+	if (json) {
+		var obj = {};
 		try {
-			conversation_notes = JSON.parse(conversation_notes_json);
+			obj = JSON.parse(json);
 		} catch (e) {}
-		if (conversation_notes && typeof(conversation_notes) == 'object') {
-			return conversation_notes;
+		if (obj && typeof(obj) == 'object') {
+			return obj;
 		} else {
 			return {};
 		}
@@ -3663,10 +4570,10 @@ function initModulesList()
 				{
 					action: 'activate',
 					alias: alias
-				}, 
+				},
 				laroute.route('modules.ajax'),
 				function(response) {
-					if (typeof(response.status) != "undefined" && response.status == "success") {
+					if (isAjaxSuccess(response)) {
 						window.location.href = '';
 					} else {
 						showAjaxError(response);
@@ -3683,10 +4590,10 @@ function initModulesList()
 				{
 					action: 'deactivate',
 					alias: alias
-				}, 
+				},
 				laroute.route('modules.ajax'),
 				function(response) {
-					if (typeof(response.status) != "undefined" && response.status == "success") {
+					if (isAjaxSuccess(response)) {
 						window.location.href = '';
 					} else {
 						showAjaxError(response);
@@ -3707,10 +4614,10 @@ function initModulesList()
 							{
 								action: 'delete',
 								alias: alias
-							}, 
+							},
 							laroute.route('modules.ajax'),
 							function(response) {
-								if (typeof(response.status) != "undefined" && response.status == "success") {
+								if (isAjaxSuccess(response)) {
 									window.location.href = '';
 								} else {
 									showAjaxError(response);
@@ -3726,17 +4633,17 @@ function initModulesList()
 		});
 		$('.update-module-trigger').click(function(e) {
 			var button = $(this);
-			
+
 			button.button('loading');
 			var alias = button.parents('.module-card:first').attr('data-alias');
 			fsAjax(
 				{
 					action: 'update',
 					alias: alias
-				}, 
+				},
 				laroute.route('modules.ajax'),
 				function(response) {
-					if (typeof(response.status) != "undefined" && response.status == "success") {
+					if (isAjaxSuccess(response)) {
 						window.location.href = '';
 					} else {
 						showAjaxError(response);
@@ -3746,6 +4653,27 @@ function initModulesList()
 			);
 
 			e.preventDefault();
+		});
+		$('.deactivate-license-trigger').click(function(e) {
+			var button = $(this);
+			var alias = button.parents('.module-card:first').attr('data-alias');
+			loaderShow();
+			fsAjax(
+				{
+					action: 'deactivate_license',
+					alias: alias,
+					license: $('#module-'+alias).children().find('.license-key-text:first').text()
+				},
+				laroute.route('modules.ajax'),
+				function(response) {
+					if (isAjaxSuccess(response)) {
+						window.location.href = '';
+					} else {
+						showAjaxError(response);
+						loaderHide();
+					}
+				}, true
+			);
 		});
 	});
 }
@@ -3759,10 +4687,10 @@ function installModule(alias)
 			action: button.attr('data-action'),
 			alias: alias,
 			license: $('#module-'+alias).children().find('.license-key:first').val()
-		}, 
+		},
 		laroute.route('modules.ajax'),
 		function(response) {
-			if ((typeof(response.status) != "undefined" && response.status == "success") ||
+			if ((isAjaxSuccess(response)) ||
 				(typeof(response.reload) != "undefined" && response.reload))
 			{
 				window.location.href = '';
@@ -3780,7 +4708,7 @@ function scrollTo(el, selector, speed, offset)
     if (typeof(offset) == "undefined") {
         offset = 0;
     }
-    if (typeof(speed) == "undefined") {
+    if (typeof(speed) == "undefined" || !speed) {
         speed = 600;
     }
     var eljq = null;
@@ -3826,4 +4754,277 @@ function personPhotoHtml(initials, photo_url, attrs, photo_class, size)
 	html += '</span>';
 
 	return html;
+}
+
+function switchHelpdeskUrl()
+{
+	var url = window.location.href.replace(/#.*/, '');
+	if (url.indexOf('?') == -1) {
+		url = url+'?';
+	} else {
+		url = url+'&';
+	}
+	url = url + 'nc='+Date.now()+"#in-app-close";
+
+	window.location.href = url;
+}
+
+function inAppPostMessage(data)
+{
+	if (typeof(webkit) != "undefined" && typeof(webkit.messageHandlers) != "undefined"
+		&& typeof(webkit.messageHandlers.cordova_iab) != "undefined"
+		&& typeof(webkit.messageHandlers.cordova_iab.postMessage) != "undefined"
+	) {
+		webkit.messageHandlers.cordova_iab.postMessage(JSON.stringify(data));
+	} else {
+		// Wait
+		setTimeout(function() {
+			inAppPostMessage(data);
+		}, 100);
+	}
+}
+
+function inApp(topic, token)
+{
+	$(document).ready(function() {
+		$('.in-app-switcher').removeClass('hidden');
+		if (!jQuery.isEmptyObject(fs_in_app_data)) {
+			fs_in_app_data['action'] = 'data';
+			inAppPostMessage(fs_in_app_data);
+		}
+		if (!getCookie('in_app')) {
+			setCookie('in_app', '1');
+		}
+	});
+}
+
+function setCookie(name, value, props)
+{
+    props = props || {path:"/"};
+
+    if (!props.expires) {
+    	// Max expiration date
+		var exp_date = new Date();
+	    exp_date.setSeconds(2147483647);
+    	props.expires = exp_date;
+    }
+
+    var exp = props.expires;
+    if (typeof exp == "number" && exp) {
+        var d = new Date();
+        d.setTime(d.getTime() + exp*1000);
+        exp = props.expires = d;
+    }
+    if (exp && exp.toUTCString) { 
+    	props.expires = exp.toUTCString();
+    }
+
+    value = encodeURIComponent(value);
+    var updatedCookie = name + "=" + value
+    for (var propName in props) {
+        updatedCookie += "; " + propName;
+        var propValue = props[propName];
+        if (propValue !== true) {
+        	updatedCookie += "=" + propValue;
+       	}
+    }
+
+    document.cookie = updatedCookie;
+}
+
+function getCookie(name)
+{
+    var matches = document.cookie.match(new RegExp(
+        "(?:^|; )" + name.replace(/([\.$?*|{}\(\)\[\]\\\/\+^])/g, '\\$1') + "=([^;]*)"
+    ));
+    return matches ? decodeURIComponent(matches[1]) : undefined
+}
+
+function fsAddAction(action, callback, priority)
+{
+	if (typeof(priority) == "undefined") {
+		priority = 20;
+	}
+	if (typeof(fs_actions[action]) == "undefined") {
+		fs_actions[action] = [];
+	}
+	fs_actions[action].push({
+		callback: callback,
+		priority: priority
+	});
+}
+
+function fsDoAction(action, params)
+{
+	if (typeof(fs_actions[action]) != "undefined") {
+		if (typeof(params) == "undefined") {
+			params = {};
+		}
+		for (var i in fs_actions[action]) {
+			fs_actions[action][i].callback(params);
+		}
+		return true;
+	} else {
+		return false;
+	}
+}
+
+function fsAddFilter(filter, callback, priority)
+{
+	if (typeof(priority) == "undefined") {
+		priority = 20;
+	}
+	if (typeof(fs_filters[filter]) == "undefined") {
+		fs_filters[filter] = [];
+	}
+	fs_filters[filter].push({
+		callback: callback,
+		priority: priority
+	});
+}
+
+function fsApplyFilter(filter, value, params)
+{
+	if (typeof(fs_filters[filter]) != "undefined") {
+		if (typeof(params) == "undefined") {
+			params = {};
+		}
+		for (var i in fs_filters[filter]) {
+			value = fs_filters[filter][i].callback(value, params);
+		}
+	}
+	return value;
+}
+
+function maybeScrollToReplyBlock(offset)
+{
+	var reply_block = $('.conv-reply-block:visible:first');
+	var block_top = reply_block.position().top;
+	if (block_top > $(window).height() / 2
+		|| block_top < $(window).scrollTop()
+	) {
+		if (typeof(offset) == "undefined") {
+			offset = -20;
+		}
+		scrollTo(reply_block, '', null, offset);
+	}
+}
+
+function initConvSettings()
+{
+	var settings_modal = jQuery('#conv-settings-modal');
+    var history_select = jQuery('#email_history', settings_modal);
+
+	$('#conv-settings-modal').on('show.bs.modal', function (e) {
+		var is_forward = $(".conv-reply-block.conv-forward-block").length;
+
+		if (is_forward) {
+			$('#email_history option[value="global"]').hide();
+			$('#email_history option[value="none"]').hide();
+			if ($('#email_history').val() == 'global') {
+				$('#email_history').val('full');
+			}
+		} else {
+			$('#email_history option[value="global"]').show();
+			$('#email_history option[value="none"]').show();
+		}
+	})
+
+    $('.button-save-settings:first', settings_modal).on('click', function(e) {
+        e.preventDefault();
+        settings_modal.modal('hide');
+
+        $(".conv-reply-block").children().find(":input[name='conv_history']:first").val(history_select.val());
+
+        /*fsAjax(
+            {
+                action: 'save_settings',
+                conversation_id: getGlobalAttr('conversation_id'),
+                email_history: history_select.val(),
+            },
+            laroute.route('conversations.ajax'),
+            function(response) {
+                if (typeof(response.status) != "undefined" && response.status !== 'success') {
+                    if (typeof (response.msg) != "undefined") {
+                        showFloatingAlert('error', response.msg);
+                    } else {
+                        showFloatingAlert('error', Lang.get("messages.error_occured"));
+                    }
+                    loaderHide();
+                }
+            },
+            true
+        );*/
+    });
+
+
+    $('.button-cancel-settings:first', settings_modal).on('click', function(e) {
+        e.preventDefault();
+        settings_modal.modal('hide');
+
+	   	var value = $(".conv-reply-block").children().find(":input[name='conv_history']:first").val();
+	   	if (!value) {
+	   		value = 'global';
+	   	}
+		jQuery('#email_history', jQuery('#conv-settings-modal')).val(value);
+    });
+}
+
+function initUsers()
+{
+	$('#search-users').on('keyup keypress', function(e) {
+		var q = $(this).val().trim().toLowerCase();
+		var clear = $('#search-users-clear i:first');
+		if (q) {
+			if (clear.hasClass('glyphicon-search')) {
+				clear.removeClass('glyphicon-search').addClass('glyphicon-remove');
+			}
+			$('#users-list .card').each(function(i, el) {
+				var texts = '';
+				$(el).children('.user-q').each(function(i, el) {
+					texts += $(el).text();
+				});
+				if (texts.toLowerCase().indexOf(q) != -1) {
+					$(el).show();
+				} else {
+					$(el).hide();
+				}
+			});
+		} else {
+			if (!clear.hasClass('glyphicon-search')) {
+				clear.removeClass('glyphicon-remove').addClass('glyphicon-search');
+			}
+			$('#users-list .card').show();
+		}
+	});
+
+	$('#search-users-clear').click(function(e) {
+		$('#search-users').val('').keypress();
+	});
+}
+
+function copyToClipboard(text) {
+    var $temp = $("<input>");
+    $("body").append($temp);
+    $temp.val(text).select();
+    document.execCommand("copy");
+    $temp.remove();
+}
+
+function adjustCustomerSidebarHeight()
+{
+	var sidebar_h = $('#conv-layout-customer')[0].scrollHeight;
+
+	if (sidebar_h > $('#conv-layout').height()) {
+		$('#conv-layout').css('min-height', (sidebar_h+20)+'px');
+	}
+}
+
+function closeAllModals()
+{
+	$('.modal').modal('hide');
+}
+
+function replaceAll(text, search, replacement) {
+    return text.split(search).join(replacement);
 }

@@ -2,14 +2,21 @@
 
 namespace App;
 
+use App\Email;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Watson\Rememberable\Rememberable;
 
 class Customer extends Model
 {
     use Rememberable;
-
+    // This is obligatory.
     public $rememberCacheDriver = 'array';
+
+    const PHOTO_DIRECTORY = 'customers';
+    const PHOTO_SIZE = 64; // px
+    const PHOTO_QUALITY = 77;
 
     /**
      * Genders.
@@ -45,7 +52,7 @@ class Customer extends Model
         self::PHONE_TYPE_HOME   => 'home',
         self::PHONE_TYPE_OTHER  => 'other',
         self::PHONE_TYPE_MOBILE => 'mobile',
-        self::PHONE_TYPE_FAX    => 'Fax',
+        self::PHONE_TYPE_FAX    => 'fax',
         self::PHONE_TYPE_PAGER  => 'pager',
     ];
 
@@ -78,51 +85,52 @@ class Customer extends Model
     /**
      * Chat types.
      */
-    const CHAT_TYPE_AIM = 1;
-    const CHAT_TYPE_GTALK = 2;
-    const CHAT_TYPE_ICQ = 3;
-    const CHAT_TYPE_XMPP = 4;
-    const CHAT_TYPE_MSN = 5;
-    const CHAT_TYPE_SKYPE = 6;
-    const CHAT_TYPE_YAHOO = 7;
-    const CHAT_TYPE_QQ = 8;
-    const CHAT_TYPE_WECHAT = 10;
-    const CHAT_TYPE_OTHER = 9;
+    // const CHAT_TYPE_AIM = 1;
+    // const CHAT_TYPE_GTALK = 2;
+    // const CHAT_TYPE_ICQ = 3;
+    // const CHAT_TYPE_XMPP = 4;
+    // const CHAT_TYPE_MSN = 5;
+    // const CHAT_TYPE_SKYPE = 6;
+    // const CHAT_TYPE_YAHOO = 7;
+    // const CHAT_TYPE_QQ = 8;
+    // const CHAT_TYPE_WECHAT = 10;
+    // const CHAT_TYPE_OTHER = 9;
 
     /**
      * For API.
      */
-    public static $chat_types = [
-        self::CHAT_TYPE_AIM    => 'aim',
-        self::CHAT_TYPE_GTALK  => 'gtalk',
-        self::CHAT_TYPE_ICQ    => 'icq',
-        self::CHAT_TYPE_XMPP   => 'xmpp',
-        self::CHAT_TYPE_MSN    => 'msn',
-        self::CHAT_TYPE_SKYPE  => 'skype',
-        self::CHAT_TYPE_YAHOO  => 'yahoo',
-        self::CHAT_TYPE_QQ     => 'qq',
-        self::CHAT_TYPE_WECHAT => 'wechat', // Extra
-        self::CHAT_TYPE_OTHER  => 'other',
-    ];
+    // public static $chat_types = [
+    //     self::CHAT_TYPE_AIM    => 'aim',
+    //     self::CHAT_TYPE_GTALK  => 'gtalk',
+    //     self::CHAT_TYPE_ICQ    => 'icq',
+    //     self::CHAT_TYPE_XMPP   => 'xmpp',
+    //     self::CHAT_TYPE_MSN    => 'msn',
+    //     self::CHAT_TYPE_SKYPE  => 'skype',
+    //     self::CHAT_TYPE_YAHOO  => 'yahoo',
+    //     self::CHAT_TYPE_QQ     => 'qq',
+    //     self::CHAT_TYPE_WECHAT => 'wechat', // Extra
+    //     self::CHAT_TYPE_OTHER  => 'other',
+    // ];
 
-    public static $chat_type_names = [
-        self::CHAT_TYPE_AIM    => 'AIM',
-        self::CHAT_TYPE_GTALK  => 'Google+',
-        self::CHAT_TYPE_ICQ    => 'ICQ',
-        self::CHAT_TYPE_XMPP   => 'XMPP',
-        self::CHAT_TYPE_MSN    => 'MSN',
-        self::CHAT_TYPE_SKYPE  => 'Skype',
-        self::CHAT_TYPE_YAHOO  => 'Yahoo',
-        self::CHAT_TYPE_QQ     => 'QQ',
-        self::CHAT_TYPE_WECHAT => 'WeChat', // Extra
-        self::CHAT_TYPE_OTHER  => 'Other',
-    ];
+    // public static $chat_type_names = [
+    //     self::CHAT_TYPE_AIM    => 'AIM',
+    //     self::CHAT_TYPE_GTALK  => 'Google+',
+    //     self::CHAT_TYPE_ICQ    => 'ICQ',
+    //     self::CHAT_TYPE_XMPP   => 'XMPP',
+    //     self::CHAT_TYPE_MSN    => 'MSN',
+    //     self::CHAT_TYPE_SKYPE  => 'Skype',
+    //     self::CHAT_TYPE_YAHOO  => 'Yahoo',
+    //     self::CHAT_TYPE_QQ     => 'QQ',
+    //     self::CHAT_TYPE_WECHAT => 'WeChat', // Extra
+    //     self::CHAT_TYPE_OTHER  => 'Other',
+    // ];
 
     /**
      * Social types.
      */
     const SOCIAL_TYPE_TWITTER = 1;
     const SOCIAL_TYPE_FACEBOOK = 2;
+    const SOCIAL_TYPE_TELEGRAM = 14;
     const SOCIAL_TYPE_LINKEDIN = 3;
     const SOCIAL_TYPE_ABOUTME = 4;
     const SOCIAL_TYPE_GOOGLE = 5;
@@ -138,6 +146,7 @@ class Customer extends Model
     public static $social_types = [
         self::SOCIAL_TYPE_TWITTER    => 'twitter',
         self::SOCIAL_TYPE_FACEBOOK   => 'facebook',
+        self::SOCIAL_TYPE_TELEGRAM   => 'telegram',
         self::SOCIAL_TYPE_LINKEDIN   => 'linkedin',
         self::SOCIAL_TYPE_ABOUTME    => 'aboutme',
         self::SOCIAL_TYPE_GOOGLE     => 'google',
@@ -154,6 +163,7 @@ class Customer extends Model
     public static $social_type_names = [
         self::SOCIAL_TYPE_TWITTER    => 'Twitter',
         self::SOCIAL_TYPE_FACEBOOK   => 'Facebook',
+        self::SOCIAL_TYPE_TELEGRAM   => 'Telegram',
         self::SOCIAL_TYPE_LINKEDIN   => 'Linkedin',
         self::SOCIAL_TYPE_ABOUTME    => 'About.me',
         self::SOCIAL_TYPE_GOOGLE     => 'Google',
@@ -165,6 +175,13 @@ class Customer extends Model
         self::SOCIAL_TYPE_FLICKR     => 'Flickr',
         self::SOCIAL_TYPE_VK         => 'VK',
         self::SOCIAL_TYPE_OTHER      => 'Other',
+    ];
+
+    /**
+     * Search filters.
+     */
+    public static $search_filters = [
+        'mailbox',
     ];
 
     /**
@@ -423,6 +440,10 @@ class Customer extends Model
         'ZW' => 'Zimbabwe',
     ];
 
+    protected $casts = [
+        'meta' => 'array',
+    ];
+
     /**
      * Attributes which are not fillable using fill() method.
      */
@@ -433,12 +454,12 @@ class Customer extends Model
      *
      * @var [type]
      */
-    protected $fillable = ['first_name', 'last_name', 'company', 'job_title', 'address', 'city', 'state', 'zip', 'country'];
+    protected $fillable = ['first_name', 'last_name', 'company', 'job_title', 'address', 'city', 'state', 'zip', 'country', 'photo_url', 'age', 'gender', 'notes', 'channel', 'channel_id', 'social_profiles'];
 
     /**
      * Fields stored as JSON.
      */
-    protected $json_fields = ['phones', 'websites', 'social_profiles', 'chats'];
+    protected $json_fields = ['phones', 'websites', 'social_profiles'];
 
     /**
      * Get customer emails.
@@ -470,6 +491,14 @@ class Customer extends Model
     public function getMainEmail()
     {
         return optional($this->emails_cached()->first())->email;
+    }
+
+    /**
+     * Get main email.
+     */
+    public static function getMainEmailStatic($customer_id)
+    {
+        return Email::select('email')->where('customer_id', $customer_id)->pluck('email');
     }
 
     /**
@@ -598,10 +627,17 @@ class Customer extends Model
      *
      * @return array
      */
-    public function getPhones()
+    public function getPhones($dummy_if_empty = false)
     {
-        if ($this->phones) {
-            return json_decode($this->phones, true);
+        $phones = json_decode($this->phones ?? '', true);
+
+        if (is_array($phones) && count($phones)) {
+            return $phones;
+        } elseif ($dummy_if_empty) {
+            return [[
+                'type' => self::PHONE_TYPE_WORK,
+                'value' => '',
+            ]];
         } else {
             return [];
         }
@@ -639,9 +675,13 @@ class Customer extends Model
     public static function formatPhones(array $phones_array)
     {
         $phones = [];
+
         foreach ($phones_array as $phone) {
             if (is_array($phone)) {
-                if (!empty($phone['value']) && !empty($phone['type']) && in_array($phone['type'], array_keys(self::$phone_types))) {
+                if (!empty($phone['value'])) {
+                    if (empty($phone['type']) || !in_array($phone['type'], array_keys(self::$phone_types))) {
+                        $phone['type'] = self::PHONE_TYPE_WORK;
+                    }
                     $phones[] = [
                         'value' => (string) $phone['value'],
                         'type'  => (int) $phone['type'],
@@ -663,10 +703,26 @@ class Customer extends Model
      */
     public function addPhone($phone, $type = self::PHONE_TYPE_WORK)
     {
-        $this->setPhones(array_merge(
-            $this->getPhones(),
-            [['value' => $phone, 'type' => $type]]
-        ));
+        if (is_string($phone)) {
+            $this->setPhones(array_merge(
+                $this->getPhones(),
+                [['value' => $phone, 'type' => $type]]
+            ));
+        } else {
+            $this->setPhones(array_merge(
+                $this->getPhones(),
+                [$phone]
+            ));
+        }
+    }
+
+    /**
+     * Find customer by phone number.
+     */
+    public static function findByPhone($phone)
+    {
+        $phone = trim($phone);
+        return Customer::where('phones', 'LIKE', '%"'.$phone.'"%')->first();
     }
 
     /**
@@ -674,10 +730,17 @@ class Customer extends Model
      *
      * @return array
      */
-    public function getSocialProfiles()
+    public function getSocialProfiles($dummy_if_empty = false)
     {
-        if ($this->social_profiles) {
+        $social_profiles = json_decode($this->social_profiles ?? '', true);
+
+        if (is_array($social_profiles) && count($social_profiles)) {
             return json_decode($this->social_profiles, true);
+        } elseif ($dummy_if_empty) {
+            return [[
+                'type' => '',
+                'value' => '',
+            ]];
         } else {
             return [];
         }
@@ -690,8 +753,9 @@ class Customer extends Model
      */
     public function getWebsites($dummy_if_empty = false)
     {
-        if ($this->websites) {
-            return json_decode($this->websites, true);
+        $websites = json_decode($this->websites ?? '', true);
+        if (is_array($websites) && count($websites)) {
+            return $websites;
         } elseif ($dummy_if_empty) {
             return [''];
         } else {
@@ -710,6 +774,12 @@ class Customer extends Model
         foreach ($websites_array as $key => $value) {
             // FILTER_SANITIZE_URL cuts some symbols.
             //$value = filter_var((string) $value, FILTER_SANITIZE_URL);
+            if (isset($value['value'])) {
+                $value = $value['value'];
+            }
+            if (!$value || preg_match("/^http(s)?:?\/?\/?$/i", $value)) {
+                continue;
+            }
             if (!preg_match("/http(s)?:\/\//i", $value)) {
                 $value = 'http://'.$value;
             }
@@ -723,7 +793,81 @@ class Customer extends Model
      */
     public function addWebsite($website)
     {
-        $this->setWebsites(array_merge($this->getWebsites(), [$value]));
+        $websites = $this->getWebsites();
+        if (isset($website['value'])) {
+            $website = $website['value'];
+        }
+        array_push($websites, $website);
+        $this->setWebsites($websites);
+    }
+
+    /**
+     * Sanitize social profiles.
+     *
+     * @param array $list [description]
+     *
+     * @return array [description]
+     */
+    public static function formatSocialProfiles(array $list)
+    {
+        $social_profiles = [];
+        foreach ($list as $social_profile) {
+            if (is_array($social_profile)) {
+                if (!empty($social_profile['value']) && !empty($social_profile['type'])) {
+
+                    $type = null;
+
+                    if (is_numeric($social_profile['type']) && in_array($social_profile['type'], array_keys(self::$social_types))) {
+                        $type = (int)$social_profile['type'];
+                    } else {
+                        // Find type.
+                        foreach (self::$social_types as $type_id => $type_name) {
+                            if ($type_name == strtolower($social_profile['type'])) {
+                                $type = $type_id;
+                            }
+                        }
+                    }
+
+                    if (!$type) {
+                        continue;
+                    }
+
+                    $social_profiles[] = [
+                        'value' => (string) $social_profile['value'],
+                        'type'  => $type,
+                    ];
+                }
+            } else {
+                $social_profiles[] = [
+                    'value' => (string) $social_profile,
+                    'type'  => self::SOCIAL_TYPE_OTHER,
+                ];
+            }
+        }
+
+        return $social_profiles;
+    }
+
+    /**
+     * Set social profiles as JSON.
+     *
+     * @param array $websites_array
+     */
+    public function setSocialProfiles(array $sp_array)
+    {
+        $sp_array = self::formatSocialProfiles($sp_array);
+
+        // Remove dubplicates.
+        $list = [];
+        foreach ($sp_array as $i => $data) {
+            if (in_array($data['value'], $list)) {
+                unset($sp_array[$i]);
+            } else {
+                $list[] = $data['value'];
+            }
+        }
+
+        $this->social_profiles = \Helper::jsonEncodeUtf8($sp_array);
     }
 
     /**
@@ -736,6 +880,8 @@ class Customer extends Model
      */
     public static function create($email, $data = [])
     {
+        $new = false;
+
         $email = Email::sanitizeEmail($email);
         if (!$email) {
             return null;
@@ -743,6 +889,12 @@ class Customer extends Model
         $email_obj = Email::where('email', $email)->first();
         if ($email_obj) {
             $customer = $email_obj->customer;
+
+            // In case somehow the email has no customer.
+            if (!$customer) {
+                // Customer will be saved and connected to the email later.
+                $customer = new self();
+            }
 
             // Update name if empty.
             /*if (empty($customer->first_name) && !empty($data['first_name'])) {
@@ -756,6 +908,8 @@ class Customer extends Model
             $customer = new self();
             $email_obj = new Email();
             $email_obj->email = $email;
+
+            $new = true;
         }
 
         // Set empty fields
@@ -763,9 +917,31 @@ class Customer extends Model
             $customer->save();
         }
 
-        if (empty($email_obj->id) || !$email_obj->customer_id) {
-            $email_obj->customer()->associate($customer);
-            $email_obj->save();
+        if (empty($email_obj->id) || !$email_obj->customer_id || $email_obj->customer_id != $customer->id) {
+            // Email may have been set in setData().
+            $save_email = true;
+            if (!empty($data['emails']) && is_array($data['emails'])) {
+                foreach ($data['emails'] as $data_email) {
+                    if (is_string($data_email) && $data_email == $email) {
+                        $save_email = false;
+                        break;
+                    }
+                    if (is_array($data_email) && !empty($data_email['value']) && $data_email['value'] == $email) {
+                        $save_email = false;
+                        break;
+                    }
+                }
+            }
+            if ($save_email) {
+                $email_obj->customer()->associate($customer);
+                $email_obj->save();
+            }
+        }
+
+        // Todo: check phone uniqueness.
+
+        if ($new) {
+            \Eventy::action('customer.created', $customer);
         }
 
         return $customer;
@@ -778,9 +954,24 @@ class Customer extends Model
     {
         $result = false;
 
+        // todo: photoUrl.
+        if (isset($data['photo_url'])) {
+            unset($data['photo_url']);
+        }
+
+        if (!empty($data['background']) && empty($data['notes'])) {
+            $data['notes'] = $data['background'];
+        }
+
         if ($replace_data) {
             // Replace data.
-            $this->fill($data);
+            $data_prepared = $data;
+            foreach ($data_prepared as $i => $value) {
+                if (is_array($value)) {
+                    unset($data_prepared[$i]);
+                }
+            }
+            $this->fill($data_prepared);
             $result = true;
         } else {
             // Update empty fields.
@@ -793,22 +984,79 @@ class Customer extends Model
         }
 
         // Set JSON values.
+        if (!empty($data['phone'])) {
+            $this->addPhone($data['phone']);
+        }
         foreach ($data as $key => $value) {
-            if (!in_array($key, $this->json_fields)) {
+            if (!in_array($key, $this->json_fields) && $key != 'emails') {
                 continue;
             }
-            // todo: setChats, setSocialProfiles
             if ($key == 'phones') {
-                foreach ($value as $phone_value) {
-                    $this->addPhone($phone_value);
+                if (isset($value['value'])) {
+                    $this->addPhone($value);
+                } else {
+                    $this->setPhones($value);
+                    // foreach ($value as $phone_value) {
+                    //     $this->addPhone($phone_value);
+                    // }
                 }
                 $result = true;
             }
             if ($key == 'websites') {
-                $this->addWebsite($value);
+                if (is_array($value)) {
+                    $this->setWebsites($value);
+                    // foreach ($value as $website) {
+                    //     $this->addWebsite($website);
+                    // }
+                } else {
+                    $this->addWebsite($value);
+                }
+                $result = true;
+            }
+            if ($key == 'social_profiles') {
+                $this->setSocialProfiles($value);
+                $result = true;
+            }
+            if ($key == 'country') {
+                if (array_search($this->country, Customer::$countries)) {
+                    $this->country = array_search($this->country, Customer::$countries);
+                }
+                $this->country = strtoupper(mb_substr($this->country, 0, 2));
                 $result = true;
             }
         }
+
+        // Emails must be processed the last as they need to save object.
+        foreach ($data as $key => $value) {
+            if ($key == 'emails') {
+                foreach ($value as $email_data) {
+                    if (is_string($email_data)) {
+                        if (!$this->id) {
+                            $this->save();
+                        }
+                        $email_created = Email::create($email_data, $this->id, Email::TYPE_WORK);
+
+                        if ($email_created) {
+                            $result = true;
+                        }
+                    } elseif (!empty($email_data['value'])) {
+                        if (!$this->id) {
+                            $this->save();
+                        }
+                        $email_created = Email::create($email_data['value'], $this->id, $email_data['type']);
+
+                        if ($email_created) {
+                            $result = true;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        // Maybe Todo: check phone uniqueness.
+        // Same phone can be written in many ways, so it's almost useless to chek uniqueness.
+
+        \Eventy::action('customer.set_data', $this, $data, $replace_data);
 
         if ($save) {
             $this->save();
@@ -818,13 +1066,17 @@ class Customer extends Model
     }
 
     /**
+     * Create a customer, email is not required.
      * For phone conversations.
      */
     public static function createWithoutEmail($data = [])
     {
         $customer = new self();
-        $customer->fill($data);
+        $customer->setData($data);
+
         $customer->save();
+
+        \Eventy::action('customer.created', $customer);
 
         return $customer;
     }
@@ -840,6 +1092,16 @@ class Customer extends Model
     }
 
     /**
+     * Get view customer URL.
+     *
+     * @return string
+     */
+    public function urlView()
+    {
+        return route('customers.conversations', ['id'=>$this->id]);
+    }
+
+    /**
      * Format date according to customer's timezone.
      *
      * @param Carbon $date
@@ -850,12 +1112,6 @@ class Customer extends Model
     public static function dateFormat($date, $format = 'M j, Y H:i')
     {
         return $date->format($format);
-    }
-
-    public function getPhotoUrl()
-    {
-        // todo
-        return '/img/default-avatar.png';
     }
 
     /**
@@ -912,14 +1168,19 @@ class Customer extends Model
             ->get()
             ->toArray();
 
-        foreach ($data as $values) {
+        foreach ($list as $email) {
             // Dummy customer.
             $customer = new Customer();
-            $customer->email = $values['email'];
-            $customer->first_name = $values['first_name'];
-            $customer->last_name = $values['last_name'];
+            $customer->email = $email;
 
-            $result[$values['email']] = $customer->getNameAndEmail();
+            foreach ($data as $values) {
+                if (strtolower($values['email']) == strtolower($email)) {
+                    $customer->first_name = $values['first_name'];
+                    $customer->last_name = $values['last_name'];
+                    break;
+                }
+            }
+            $result[$email] = $customer->getNameAndEmail();
         }
 
         return $result;
@@ -952,5 +1213,175 @@ class Customer extends Model
         }
 
         return '';
+    }
+
+    public function getPhotoUrl($default_if_empty = true)
+    {
+        if (!empty($this->photo_url) || !$default_if_empty) {
+            if (!empty($this->photo_url)) {
+                return self::getPhotoUrlByFileName($this->photo_url);
+            } else {
+                return '';
+            }
+        } else {
+            return asset('/img/default-avatar.png');
+        }
+    }
+
+    public static function getPhotoUrlByFileName($file_name)
+    {
+        return Storage::url(self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$file_name);
+    }
+
+    /**
+     * Resize and save photo.
+     */
+    public function savePhoto($real_path, $mime_type)
+    {
+        $resized_image = \App\Misc\Helper::resizeImage($real_path, $mime_type, self::PHOTO_SIZE, self::PHOTO_SIZE);
+
+        if (!$resized_image) {
+            return false;
+        }
+
+        $file_name = md5(Hash::make($this->id)).'.jpg';
+        $dest_path = Storage::path(self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$file_name);
+
+        $dest_dir = pathinfo($dest_path, PATHINFO_DIRNAME);
+        if (!file_exists($dest_dir)) {
+            \File::makeDirectory($dest_dir, 0755);
+        }
+
+        // Remove current photo
+        if ($this->photo_url) {
+            Storage::delete(self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$this->photo_url);
+        }
+
+        imagejpeg($resized_image, $dest_path, self::PHOTO_QUALITY);
+
+        return $file_name;
+    }
+
+    /**
+     * Remove user photo.
+     */
+    public function removePhoto()
+    {
+        if ($this->photo_url) {
+            Storage::delete(self::PHOTO_DIRECTORY.DIRECTORY_SEPARATOR.$this->photo_url);
+        }
+        $this->photo_url = '';
+    }
+
+    public function getCountryName()
+    {
+        if ($this->country && !empty(self::$countries[$this->country])) {
+            return self::$countries[$this->country];
+        } else {
+            return '';
+        }
+    }
+
+    /**
+     * Get first and last name.
+     */
+    public static function parseName($name)
+    {
+        $data = [];
+
+        if (!$name) {
+            return $data;
+        }
+
+        $name_parts = explode(' ', $name, 2);
+        $data['first_name'] = $name_parts[0];
+        if (!empty($name_parts[1])) {
+            $data['last_name'] = $name_parts[1];
+        }
+
+        return $data;
+    }
+
+    public static function formatSocialProfile($sp)
+    {
+        if (empty($sp['type']) || !isset(self::$social_type_names[$sp['type']])) {
+            $sp['type'] = self::SOCIAL_TYPE_OTHER;
+        }
+
+        $sp['type_name'] = self::$social_type_names[$sp['type']];
+
+        $sp['value_url'] = $sp['value'];
+
+        if (!preg_match("/^https?:\/\//i", $sp['value_url'])) {
+            switch ($sp['type']) {
+                case self::SOCIAL_TYPE_TELEGRAM:
+                    $sp['value_url'] = 'https://t.me/'.$sp['value'];
+                    break;
+                
+                default:
+                    $sp['value_url'] = 'http://'.$sp['value_url'];
+                    break;
+            }
+        }
+        if (empty($sp['value_url'])) {
+            $sp['value_url'] = '';
+        }
+
+        return $sp;
+    }
+
+    public function setPhotoFromRemoteFile($url)
+    {
+        $headers = get_headers($url);
+
+        if (!preg_match("/200/", $headers[0])) {
+            return false;
+        }
+
+        $image_data = file_get_contents($url);
+
+        if (!$image_data) {
+            return false;
+        }
+
+        $temp_file = tempnam(sys_get_temp_dir(), 'photo');
+
+        \File::put($temp_file, $image_data);
+
+        $photo_url = $this->savePhoto($temp_file, \File::mimeType($temp_file));
+
+        if ($photo_url) {
+            $this->photo_url = $photo_url;
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public function getChannelName()
+    {
+        return \Eventy::filter('channel.name', '', $this->channel);
+    }
+
+    /**
+     * Get thread meta value.
+     */
+    public function getMeta($key, $default = null)
+    {
+        if (isset($this->meta[$key])) {
+            return $this->meta[$key];
+        } else {
+            return $default;
+        }
+    }
+
+    /**
+     * Set thread meta value.
+     */
+    public function setMeta($key, $value)
+    {
+        $meta = $this->meta;
+        $meta[$key] = $value;
+        $this->meta = $meta;
     }
 }

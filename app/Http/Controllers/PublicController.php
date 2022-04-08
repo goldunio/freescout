@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Attachment;
 use App\Conversation;
 use App\Option;
 use App\Thread;
@@ -32,6 +33,10 @@ class PublicController extends Controller
             return redirect()->route('dashboard');
         }
         $user = User::where('invite_hash', $hash)->first();
+
+        if ($user && $user->locale) {
+            \Helper::setLocale($user->locale);
+        }
 
         return view('public/user_setup', ['user' => $user]);
     }
@@ -119,10 +124,11 @@ class PublicController extends Controller
         if (empty($thread->opened_at)) {
             $thread->opened_at = date('Y-m-d H:i:s');
             $thread->save();
+            \Eventy::action('thread.opened', $thread, $conversation);
         }
 
         // Create a 1x1 ttransparent pixel and return it
-        $pixel = sprintf('%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%', 71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 255, 0, 192, 192, 192, 0, 0, 0, 33, 249, 4, 1, 0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 68, 1, 0, 59);
+        $pixel = sprintf('%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c', 71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 255, 0, 192, 192, 192, 0, 0, 0, 33, 249, 4, 1, 0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 68, 1, 0, 59);
         $response = \Response::make($pixel, 200);
         $response->header('Content-type', 'image/gif');
         $response->header('Content-Length', 42);
@@ -130,6 +136,69 @@ class PublicController extends Controller
         $response->header('Expires', 'Wed, 11 Jan 2000 12:59:00 GMT');
         $response->header('Last-Modified', 'Wed, 11 Jan 2006 12:59:00 GMT');
         $response->header('Pragma', 'no-cache');
+
+        return $response;
+    }
+
+    /**
+     * Download an attachment.
+     */
+    public function downloadAttachment($dir_1, $dir_2, $dir_3, $file_name, Request $request)
+    {
+        $id = $request->query('id', '');
+        $token = $request->query('token', '');
+        $attachment = null;
+
+        // Old attachments can not be requested by id.
+        if (!$token && $id) {
+            return \Helper::denyAccess();
+        }
+
+        // Get attachment by id.
+        if ($id) {
+            $attachment = Attachment::findOrFail($id);
+        }
+        
+        if (!$attachment) {
+            $attachment = Attachment::where('file_dir', $dir_1.DIRECTORY_SEPARATOR.$dir_2.DIRECTORY_SEPARATOR.$dir_3.DIRECTORY_SEPARATOR)
+                ->where('file_name', $file_name)
+                ->firstOrFail();
+        }
+
+        // Only allow download if the attachment is public or if the token matches the hash of the contents
+        if ($token != $attachment->getToken() && (bool)$attachment->public !== true) {
+            return \Helper::denyAccess();
+        }
+
+        $view_attachment = false;
+        $file_ext = strtolower(pathinfo($attachment->file_name, PATHINFO_EXTENSION));
+
+        // Some file type should be viewed in the browser instead of downloading.
+        if (in_array($file_ext, config('app.viewable_attachments'))) {
+            $view_attachment = true;
+        }
+
+        if (config('app.download_attachments_via') == 'apache') {
+            // Send using Apache mod_xsendfile.
+            $response = response(null)
+               ->header('Content-Type' , $attachment->mime_type)
+               ->header('X-Sendfile', $attachment->getLocalFilePath());
+
+            if (!$view_attachment) {
+                $response->header('Content-Disposition', 'attachment; filename="'.$attachment->file_name.'"');
+            }
+        } elseif (config('app.download_attachments_via') == 'nginx') {
+            // Send using Nginx.
+            $response = response(null)
+               ->header('Content-Type' , $attachment->mime_type)
+               ->header('X-Accel-Redirect', $attachment->getLocalFilePath(false));
+               
+            if (!$view_attachment) {
+                $response->header('Content-Disposition', 'attachment; filename="'.$attachment->file_name.'"');
+            }
+        } else {
+            $response = $attachment->download($view_attachment);
+        }
 
         return $response;
     }

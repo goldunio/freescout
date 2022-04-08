@@ -67,11 +67,25 @@ class CustomersController extends Controller
             //'emails'     => 'array|required_without:first_name',
             //'emails.1'   => 'nullable|email|required_without:first_name',
             'emails.*'   => 'nullable|email|distinct|required_without:first_name',
+            'photo_url'   => 'nullable|image|mimes:jpeg,png,jpg,gif',
         ]);
         $validator->setAttributeNames([
-            //'emails.1'   => __('Email'),
+            'photo_url'   => __('Photo'),
             'emails.*'   => __('Email'),
         ]);
+
+        // Photo
+        $validator->after(function ($validator) use ($customer, $request) {
+            if ($request->hasFile('photo_url')) {
+                $path_url = $customer->savePhoto($request->file('photo_url')->getRealPath(), $request->file('photo_url')->getMimeType());
+
+                if ($path_url) {
+                    $customer->photo_url = $path_url;
+                } else {
+                    $validator->errors()->add('photo_url', __('Error occured processing the image. Make sure that PHP GD extension is enabled.'));
+                }
+            }
+        });
 
         if ($validator->fails()) {
             return redirect()->route('customers.update', ['id' => $id])
@@ -128,11 +142,17 @@ class CustomersController extends Controller
             }
         }
 
-        $customer->fill($request->all());
-        // Websites
-        if (!empty($request->websites)) {
-            $customer->setWebsites($request->websites);
+        $request_data = $request->all();
+
+        if (isset($request_data['photo_url'])) {
+            unset($request_data['photo_url']);
         }
+
+        $customer->setData($request_data);
+        // Websites
+        // if (!empty($request->websites)) {
+        //     $customer->setWebsites($request->websites);
+        // }
         $customer->save();
 
         $customer->syncEmails($request->emails);
@@ -158,8 +178,12 @@ class CustomersController extends Controller
             }
         }
 
+        \Eventy::action('customer.updated', $customer);
+
         $flash_message = __('Customer saved successfully.').' '.$flash_message;
         \Session::flash('flash_success_unescaped', $flash_message);
+        
+        \Session::flash('customer.updated', 1);
 
         return redirect()->route('customers.update', ['id' => $id]);
     }
@@ -206,6 +230,7 @@ class CustomersController extends Controller
 
         $conversations = $customer->conversations()
             ->where('customer_id', $customer->id)
+            ->whereIn('mailbox_id', auth()->user()->mailboxesIdsCanView())
             ->orderBy('created_at', 'desc')
             ->paginate(Conversation::DEFAULT_LIST_SIZE);
 
@@ -313,6 +338,71 @@ class CustomersController extends Controller
         }
 
         $response['pagination']['more'] = $customers->hasMorePages();
+
+        return \Response::json($response);
+    }
+
+    /**
+     * Ajax controller.
+     */
+    public function ajax(Request $request)
+    {
+        $response = [
+            'status' => 'error',
+            'msg'    => '', // this is error message
+        ];
+
+        $user = auth()->user();
+
+        switch ($request->action) {
+
+            // Change conversation user
+            case 'create':
+                // First name or email must be specified
+                $validator = Validator::make($request->all(), [
+                    'first_name' => 'required|string|max:255',
+                    'last_name'  => 'nullable|string|max:255',
+                    'email'      => 'required|email|unique:emails,email',
+                ]);
+
+                if ($validator->fails()) {
+                    foreach ($validator->errors()->getMessages()as $errors) {
+                        foreach ($errors as $field => $message) {
+                            $response['msg'] .= $message.' ';
+                        }
+                    }
+                }
+
+                if (!$response['msg']) {
+                   
+                    $customer = Customer::create($request->email, $request->all());
+                    if ($customer) {
+                        $response['email']  = $request->email;
+                        $response['status'] = 'success';
+                    }
+                }
+                break;
+
+            // Conversations navigation
+            case 'customers_pagination':
+            
+                $customers = app('App\Http\Controllers\ConversationsController')->searchCustomers($request, $user);
+
+                $response['status'] = 'success';
+
+                $response['html'] = view('customers/partials/customers_table', [
+                    'customers' => $customers,
+                ])->render();
+                break;
+
+            default:
+                $response['msg'] = 'Unknown action';
+                break;
+        }
+
+        if ($response['status'] == 'error' && empty($response['msg'])) {
+            $response['msg'] = 'Unknown error occured';
+        }
 
         return \Response::json($response);
     }

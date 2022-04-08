@@ -17,7 +17,8 @@ return [
     |
     */
     'core' => [
-        'minPhpVersion' => '7.0.0',
+        'minPhpVersion' => '7.1.0',
+        'maxPhpVersion' => '8.99.99',
     ],
     'final' => [
         'key'     => false,
@@ -60,6 +61,7 @@ return [
         'public/css/builds/'                => '775',
         'public/js/builds/'                 => '775',
         'public/modules/'                   => '775',
+        'Modules/'                          => '775',
     ],
 
     /*

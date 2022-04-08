@@ -35,7 +35,7 @@ class UserPolicy
      */
     public function create(User $user)
     {
-        if ($user->isAdmin()) {
+        if ($user->isAdmin() || $user->hasPermission(User::PERM_EDIT_USERS)) {
             return true;
         } else {
             return false;
@@ -52,7 +52,11 @@ class UserPolicy
      */
     public function update(User $user, User $model)
     {
-        if ($user->isAdmin() || $user->id == $model->id) {
+        if ($user->isAdmin() 
+            || $user->id == $model->id
+            || $user->hasPermission(User::PERM_EDIT_USERS)
+            || $user->canManageMailbox($model->id)
+        ) {
             return true;
         } else {
             return false;
@@ -69,7 +73,7 @@ class UserPolicy
      */
     public function delete(User $user, User $model)
     {
-        if ($user->isAdmin() || $user->id == $model->id) {
+        if ($user->isAdmin() /*|| $user->id == $model->id*/) {
             return true;
         } else {
             return false;
@@ -102,6 +106,11 @@ class UserPolicy
     public function viewMailboxMenu(User $user)
     {
         if ($user->isAdmin() || \Eventy::filter('user.can_view_mailbox_menu', false, $user)) {
+            return true;
+        // hasManageMailboxAccess creates an extra query on each page,
+        // to avoid this we don't show Manage menu to users,
+        // user can manage mailboxes from dashboard.
+        } else if ($user->hasManageMailboxAccess()) {
             return true;
         } else {
             return false;

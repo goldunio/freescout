@@ -22,16 +22,23 @@
             <tr id="version">
                 <th>{{ __('App Version') }}</th>
                 <td class="table-main-col">
-                    @if ($new_version_available)
-                        <strong class="text-danger">{{ \Config::get('app.version') }}</strong>
-                        <div class="alert alert-danger margin-top-10">
-                            {{ __('A new version is available') }}: <strong>{{ $latest_version }}</strong> <a href="{{ config('app.freescout_repo') }}/releases" target="_blank">({{ __('View details') }})</a>
-                            <button class="btn btn-default btn-sm update-trigger margin-left-10" data-loading-text="{{ __('Updating') }}…{{ __('This may take several minutes') }}"><small class="glyphicon glyphicon-refresh"></small> {{ __('Update Now') }}</button>
-                        </div>
+                    @if (!\Config::get('app.disable_updating'))
+                        @if ($new_version_available)
+                            <strong class="text-danger">{{ \Config::get('app.version') }}</strong>
+                            <div class="alert alert-danger margin-top-10">
+                                {{ __('A new version is available') }}: <strong>{{ $latest_version }}</strong> <a href="{{ config('app.freescout_repo') }}/releases" target="_blank">({{ __('View details') }})</a>
+                                <button class="btn btn-default btn-sm update-trigger margin-left-10" data-loading-text="{{ __('Updating') }}…{{ __('This may take several minutes') }}"><small class="glyphicon glyphicon-refresh"></small> {{ __('Update Now') }}</button>
+                            </div>
+                        @else
+                            <strong class="text-success">{{ \Config::get('app.version') }}</strong>
+                            &nbsp;&nbsp;
+                            <a href="#" class="btn btn-default btn-xs check-updates-trigger" data-loading-text="{{ __('Checking') }}…">{{ __('Check for updates') }}</a>
+                            @if ($latest_version_error)
+                                <div class="text-danger margin-top">{{ $latest_version_error }}</div>
+                            @endif
+                        @endif
                     @else
-                        <strong class="text-success">{{ \Config::get('app.version') }}</strong> 
-                        &nbsp;&nbsp;
-                        <a href="#" class="btn btn-default btn-xs check-updates-trigger" data-loading-text="{{ __('Checking') }}…">{{ __('Check for updates') }}</a>
+                        <strong class="text-success">{{ \Config::get('app.version') }}</strong>
                     @endif
                 </td>
             </tr>
@@ -65,6 +72,10 @@
                 <th>{{ __('PHP Version') }}</th>
                 <td class="table-main-col">PHP {{ phpversion() }}</td>
             </tr>
+            <tr>
+                <th>PHP upload_max_filesize / post_max_size</th>
+                <td class="table-main-col">{{ ini_get('upload_max_filesize') }} / {{ ini_get('post_max_size') }}</td>
+            </tr>
         </tbody>
     </table>
 
@@ -86,6 +97,24 @@
         </tbody>
     </table>
 
+    <h3 id="php">{{ __('Functions') }}</h3>
+    <table class="table table-dark-header table-bordered table-responsive table-narrow">
+        <tbody>
+            @foreach ($functions as $functions_name => $functions_status)
+                <tr>
+                    <th>{{ $functions_name }}</th>
+                    <td class="table-main-col">
+                        @if ($functions_status)
+                            <strong class="text-success">OK</strong>
+                        @else
+                            <strong class="text-danger">{{ __('Not found') }}</strong>
+                        @endif
+                    </td>
+                </tr>
+            @endforeach
+        </tbody>
+    </table>
+
     <h3 id="permissions">{{ __('Permissions') }}</h3>
     {!! __('These folders must be writable by web server user (:user).', ['user' => '<strong>'.get_current_user().'</strong>']) !!} {{ __('Recommended permissions') }}: <strong>775</strong>
     <table class="table table-dark-header table-bordered table-responsive table-narrow">
@@ -94,10 +123,29 @@
                 <tr>
                     <th>{{ $perm_path }}</th>
                     <td class="table-main-col">
-                        @if ($perm['status'])
-                            <strong class="text-success">OK</strong>
+                        @if ($perm_path == 'storage/framework/cache/data/')
+                            @if ($non_writable_cache_file)
+                                <strong class="text-danger">{{ __('Non-writable files found') }}</strong>
+                                <br/>
+                                <span class="text-danger">{{ $non_writable_cache_file }}</span>
+                                <br/><br/>
+                                {{ __('Run the following command') }} (<a href="https://github.com/freescout-helpdesk/freescout/wiki/Installation-Guide#6-configuring-web-server" target="_blank">{{ __('read more') }}</a>):<br/>
+                                <code>sudo chown -R www-data:www-data {{ base_path() }}</code>
+                            @elseif (!$perm['status'])
+                                <strong class="text-danger">{{ __('Not writable') }} @if ($perm['value'])({{ $perm['value'] }})@endif</strong>
+                            @else
+                                <strong class="text-success">OK</strong>
+                            @endif
                         @else
-                            <strong class="text-danger">{{ __('Not writable') }} @if ($perm['value'])({{ $perm['value'] }})@endif</strong>
+                            @if ($perm['status'])
+                                <strong class="text-success">OK</strong>
+                            @else
+                                <strong class="text-danger">{{ __('Not writable') }} @if ($perm['value'])({{ $perm['value'] }})@endif</strong>
+
+                                <br/><br/>
+                                {{ __('Run the following command') }} (<a href="https://github.com/freescout-helpdesk/freescout/wiki/Installation-Guide#6-configuring-web-server" target="_blank">{{ __('read more') }}</a>):<br/>
+                                <code>sudo chown -R www-data:www-data {{ base_path() }}</code>
+                            @endif
                         @endif
                     </td>
                 </tr>
@@ -135,6 +183,9 @@
     <p>
         {!! __('Make sure that you have the following line in your crontab:') !!}<br/>
         <code>* * * * * php {{ base_path() }}/artisan schedule:run &gt;&gt; /dev/null 2&gt;&amp;1</code>
+        <br/>
+        {!! __('Alternatively cron job can be executed by requesting the following URL every minute (this method is not recommended as some features may not work as expected, use it at your own risk)') !!}:<br/>
+        <a href="{{ route('system.cron', ['hash' => \Helper::getWebCronHash()]) }}" target="_blank">{{ route('system.cron', ['hash' => \Helper::getWebCronHash()]) }}</a>
     </p>
     <table class="table table-dark-header table-bordered table-responsive">
         <tbody>
@@ -153,6 +204,9 @@
     </table>
 
     <h3 id="jobs" class="margin-top-40">{{ __('Background Jobs') }}</h3>
+    @if (count($queued_jobs) || count($failed_jobs))
+        {{ __('Queued and failed jobs are cleaned automatically once in a while. No need to worry or delete them manually.') }}
+    @endif
     <table class="table table-dark-header table-bordered table-responsive">
         <tbody>
             <tr>
@@ -166,7 +220,16 @@
                             <table class="table">
                                 <tbody>
                                     <tr>
-                                        <th colspan="2">{{ $loop->index+1 }}. {{ json_decode($job->payload, true)['displayName'] }}</th>
+                                        <th>{{ $loop->index+1 }}. {{ json_decode($job->payload, true)['displayName'] }}</th>
+                                        <th>
+                                            <form action="{{ route('system.action') }}" method="POST" class="text-right">
+                                                {{ csrf_field() }}
+
+                                                <input type="hidden" name="job_id" value="{{ $job->id }}" />
+
+                                                <button type="submit" name="action" value="cancel_job" class="btn btn-default btn-xs margin-left-10">{{ __('Cancel') }}</button>
+                                            </form>
+                                        </th>
                                     </tr>
                                     <tr>
                                         <td>{{ __('Queue') }}</td>
